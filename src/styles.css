@@ -11,80 +11,8 @@
   background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
-.zotero-latex-math-tool-insert-active {
-  cursor: crosshair !important;
-}
-
-.zotero-latex-math-annotation {
-  min-width: 24px;
-  min-height: 18px;
-  overflow: visible !important;
-  text-shadow: none !important;
-}
-
-.zotero-latex-math-annotation > [data-zotero-latex-math-hidden="true"] {
-  visibility: hidden !important;
-}
-
-.zotero-latex-math-annotation
-  [data-zotero-latex-math-hidden="true"]:is(
-    textarea,
-    input,
-    [contenteditable="true"]
-  ) {
-  color: transparent !important;
-  caret-color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
-}
-
-.zotero-latex-math-source {
-  position: absolute !important;
-  inset: 0 !important;
-  overflow: hidden !important;
-  pointer-events: none !important;
-  user-select: none !important;
-  visibility: hidden !important;
-  white-space: pre-wrap !important;
-}
-
-.zotero-latex-math-render {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  max-width: max-content;
-  min-width: 1em;
-  min-height: 1em;
-  color: var(--zotero-latex-math-color, #111111) !important;
-  pointer-events: none;
-  transform-origin: left top;
-  visibility: visible !important;
-  white-space: nowrap;
-}
-
-.zotero-latex-math-render * {
-  visibility: visible !important;
-}
-
-.zotero-latex-math-render.is-display {
-  align-items: center;
-  justify-content: center;
-}
-
-.zotero-latex-math-render .katex-display {
-  margin: 0;
-}
-
-.zotero-latex-math-render .katex,
 .zotero-latex-math-preview .katex {
   color: inherit;
-}
-
-.zotero-latex-math-render:hover {
-  outline: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  outline-offset: 2px;
 }
 
 .zotero-latex-math-raw-hidden {

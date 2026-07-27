@@ -22,11 +22,6 @@ type FormulaSize = {
   height: number;
 };
 
-type RenderCandidate = {
-  element: HTMLElement;
-  payload: MathPayload;
-};
-
 type Viewport = {
   convertToPdfPoint?: (x: number, y: number) => number[];
   convertToViewportRectangle?: (rect: number[]) => number[];
@@ -46,8 +41,6 @@ type ReaderRuntime = {
   observers: MutationObserver[];
   observedDocs: Set<Document>;
   documentCleanups: Array<() => void>;
-  buttons: Set<HTMLButtonElement>;
-  activeClickHandler?: EventListener;
   resizeHandler: EventListener;
   renderTimer?: number;
   disposed: boolean;
@@ -65,9 +58,6 @@ const DISPLAY_PREFIX = "[[math:display]]";
 const INLINE_PREFIX = "[[math:inline]]";
 const STYLE_ID = "zotero-latex-math-tool-styles";
 const TOOLBAR_STYLE_ID = "zotero-latex-math-tool-toolbar-styles";
-const ACTIVE_CLASS = "zotero-latex-math-tool-insert-active";
-const RENDER_CLASS = "zotero-latex-math-render";
-const SOURCE_CLASS = "zotero-latex-math-source";
 const MANAGER_RENDER_CLASS = "zotero-latex-math-manager-render";
 const PAGE_OVERLAY_CLASS = "zotero-latex-math-page-overlay";
 const RAW_HIDDEN_CLASS = "zotero-latex-math-raw-hidden";
@@ -81,18 +71,8 @@ export class LatexMathTool {
     Set<HTMLButtonElement>
   >();
   private readerDocs = new WeakMap<_ZoteroTypes.ReaderInstance, Document>();
-  private nativeTextButtons = new WeakMap<
-    _ZoteroTypes.ReaderInstance,
-    HTMLElement
-  >();
   private watchedToolbarDocs = new WeakSet<Document>();
-  private forwardingNativeTextClickReaders =
-    new WeakSet<_ZoteroTypes.ReaderInstance>();
   private nativeTextInsertReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
-  private knownAnnotationIDs = new WeakMap<
-    _ZoteroTypes.ReaderInstance,
-    Set<string>
-  >();
   private directInsertCleanups = new WeakMap<
     _ZoteroTypes.ReaderInstance,
     Array<() => void>
@@ -194,7 +174,6 @@ export class LatexMathTool {
       observers: [],
       observedDocs: new Set(),
       documentCleanups: [],
-      buttons: new Set(this.getToolbarButtons(reader)),
       resizeHandler,
       disposed: false,
     };
@@ -249,10 +228,9 @@ export class LatexMathTool {
       }
     });
     this.getToolbarButtons(reader).add(button);
-    this.runtimes.get(reader)?.buttons.add(button);
     event.append(button);
     event.doc.defaultView?.requestAnimationFrame(() =>
-      this.relocateToolbarButton(reader, button, event.doc),
+      this.relocateToolbarButton(button, event.doc),
     );
   }
 
@@ -275,13 +253,6 @@ export class LatexMathTool {
         if (
           !button ||
           button.classList.contains("zotero-latex-math-toolbar-button")
-        ) {
-          return;
-        }
-
-        if (
-          this.forwardingNativeTextClickReaders.has(reader) &&
-          button === this.nativeTextButtons.get(reader)
         ) {
           return;
         }
@@ -311,17 +282,6 @@ export class LatexMathTool {
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", active ? "true" : "false");
     }
-  }
-
-  private setRuntimeButtonsActive(
-    runtime: ReaderRuntime,
-    active: boolean,
-  ): void {
-    for (const button of runtime.buttons) {
-      button.classList.toggle("active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-    }
-    this.setToolbarButtonsActive(runtime.reader, active);
   }
 
   private async activateNativeTextInsertMode(
@@ -465,7 +425,7 @@ export class LatexMathTool {
       annotation: Parameters<typeof manager.addAnnotation>[0],
     ) => {
       const created = originalAddAnnotation(annotation);
-      this.captureNativeTextAnnotation(reader, manager, created);
+      this.captureNativeTextAnnotation(reader, created);
       return created;
     }) as typeof manager.addAnnotation;
 
@@ -475,7 +435,7 @@ export class LatexMathTool {
         annotations: _ZoteroTypes.Reader.Annotation[],
       ) => {
         for (const annotation of annotations) {
-          this.captureNativeTextAnnotation(reader, manager, annotation);
+          this.captureNativeTextAnnotation(reader, annotation);
         }
         const result = originalUpdateAnnotations(annotations);
         if (this.hasMathAnnotation(annotations)) {
@@ -492,7 +452,7 @@ export class LatexMathTool {
       ) => {
         const result = await originalSetAnnotations(annotations);
         for (const annotation of manager._annotations ?? annotations) {
-          this.captureNativeTextAnnotation(reader, manager, annotation);
+          this.captureNativeTextAnnotation(reader, annotation);
         }
         if (this.hasMathAnnotation(manager._annotations ?? annotations)) {
           this.scheduleRender(reader, true);
@@ -507,7 +467,7 @@ export class LatexMathTool {
         annotation: _ZoteroTypes.Reader.Annotation,
         instant?: boolean,
       ) => {
-        this.captureNativeTextAnnotation(reader, manager, annotation);
+        this.captureNativeTextAnnotation(reader, annotation);
         const result = originalSave(annotation, instant);
         if (this.hasMathAnnotation([annotation])) {
           this.scheduleRender(reader, true);
@@ -529,35 +489,8 @@ export class LatexMathTool {
     );
   }
 
-  private async watchForNativeTextAnnotation(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    manager: AnnotationManager,
-  ): Promise<void> {
-    const started = Date.now();
-    while (
-      this.nativeTextInsertReaders.has(reader) &&
-      Date.now() - started < 15000
-    ) {
-      const knownIDs = this.knownAnnotationIDs.get(reader) ?? new Set<string>();
-      const annotation = manager._annotations?.find(
-        (candidate) =>
-          candidate.type === "text" &&
-          candidate.id &&
-          !knownIDs.has(candidate.id),
-      );
-      if (
-        annotation &&
-        this.captureNativeTextAnnotation(reader, manager, annotation)
-      ) {
-        return;
-      }
-      await Zotero.Promise.delay(200);
-    }
-  }
-
   private captureNativeTextAnnotation(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    manager: AnnotationManager,
     annotation?: _ZoteroTypes.Reader.Annotation | null,
   ): boolean {
     if (
@@ -569,21 +502,15 @@ export class LatexMathTool {
       return false;
     }
 
-    const knownIDs = this.knownAnnotationIDs.get(reader);
-    if (annotation.id && knownIDs?.has(annotation.id)) {
-      return false;
-    }
-
     this.nativeTextInsertReaders.delete(reader);
     this.setToolbarButtonsActive(reader, false);
     this.setNativeTool(reader, { type: "pointer" });
-    void this.completeNativeMathAnnotation(reader, manager, annotation);
+    void this.completeNativeMathAnnotation(reader, annotation);
     return true;
   }
 
   private async completeNativeMathAnnotation(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    manager: AnnotationManager,
     annotation: _ZoteroTypes.Reader.Annotation,
   ): Promise<void> {
     const doc = this.readerDocs.get(reader) ?? reader._iframeWindow?.document;
@@ -608,7 +535,6 @@ export class LatexMathTool {
   }
 
   private relocateToolbarButton(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
     button: HTMLButtonElement,
     doc: Document,
   ): void {
@@ -622,10 +548,6 @@ export class LatexMathTool {
       nativeButtons.find((candidate) =>
         this.isFreeTextToolLabel(this.getButtonLabel(candidate)),
       ) ?? this.findLastAnnotationToolButton(nativeButtons);
-
-    if (textButton) {
-      this.nativeTextButtons.set(reader, textButton);
-    }
 
     const targetParent = textButton?.parentElement;
     if (!textButton || !targetParent || targetParent === button.parentElement) {
@@ -674,60 +596,6 @@ export class LatexMathTool {
         );
       })
       .at(-1);
-  }
-
-  private activateInsertMode(runtime: ReaderRuntime): void {
-    this.ensurePointerTool(runtime.reader);
-    this.deactivateInsertMode(runtime);
-    runtime.doc.body?.classList.add(ACTIVE_CLASS);
-    this.setRuntimeButtonsActive(runtime, true);
-
-    const clickHandler: EventListener = (event) => {
-      const pointerEvent = event as MouseEvent;
-      const target = pointerEvent.target as Element | null;
-      if (!target || target.closest(`.${RENDER_CLASS}`)) {
-        return;
-      }
-
-      const location = this.getClickLocation(runtime, pointerEvent);
-      if (!location) {
-        return;
-      }
-
-      pointerEvent.preventDefault();
-      pointerEvent.stopPropagation();
-      this.deactivateInsertMode(runtime);
-      void this.openEditor(runtime, {
-        initial: { latex: "", mode: "display" },
-        title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
-        onSave: async (payload) => {
-          await this.createAnnotation(runtime, location, payload);
-          this.scheduleRender(runtime.reader, true);
-        },
-      });
-    };
-
-    runtime.activeClickHandler = clickHandler;
-    runtime.doc.addEventListener("click", clickHandler, true);
-    runtime.doc.addEventListener("pointerup", clickHandler, true);
-  }
-
-  private deactivateInsertMode(runtime: ReaderRuntime): void {
-    runtime.doc.body?.classList.remove(ACTIVE_CLASS);
-    if (runtime.activeClickHandler) {
-      runtime.doc.removeEventListener(
-        "click",
-        runtime.activeClickHandler,
-        true,
-      );
-      runtime.doc.removeEventListener(
-        "pointerup",
-        runtime.activeClickHandler,
-        true,
-      );
-      runtime.activeClickHandler = undefined;
-    }
-    this.setRuntimeButtonsActive(runtime, false);
   }
 
   private scheduleRender(
@@ -830,8 +698,6 @@ export class LatexMathTool {
       return Boolean(
         target.closest(`.${PAGE_OVERLAY_CLASS}`) ||
         target.closest(`.${MANAGER_RENDER_CLASS}`) ||
-        target.closest(`.${RENDER_CLASS}`) ||
-        target.closest(`.${SOURCE_CLASS}`) ||
         target.closest(".zotero-latex-math-modal") ||
         target.closest(".zotero-latex-math-editor-frame"),
       );
@@ -856,12 +722,6 @@ export class LatexMathTool {
   private renderMathAnnotations(runtime: ReaderRuntime): void {
     this.refreshObservedDocuments(runtime);
     const docs = this.getPDFPageDocuments(runtime);
-    const candidates = docs.flatMap((doc) => {
-      this.injectStyles(doc);
-      this.removeInlineMathRenderers(doc);
-      return this.getAnnotationCandidates(runtime, doc);
-    });
-
     const overlayCount = this.renderManagerOverlays(runtime, docs);
     if (overlayCount > 0) {
       for (const doc of docs) {
@@ -870,8 +730,6 @@ export class LatexMathTool {
     }
     this.logRenderDiagnostics(runtime, {
       docCount: docs.length,
-      domCandidateCount: candidates.length,
-      domRenderedCount: 0,
       overlayCount,
     });
   }
@@ -880,14 +738,6 @@ export class LatexMathTool {
     return this.getRuntimeDocuments(runtime).filter((doc) =>
       Boolean(doc.querySelector(".page")),
     );
-  }
-
-  private removeInlineMathRenderers(doc: Document): void {
-    for (const element of [
-      ...doc.querySelectorAll<HTMLElement>(`.${RENDER_CLASS}`),
-    ]) {
-      element.remove();
-    }
   }
 
   private installRenderedFormulaDblClickHandler(
@@ -1048,97 +898,6 @@ export class LatexMathTool {
     return undefined;
   }
 
-  private getAnnotationCandidates(
-    runtime: ReaderRuntime,
-    doc: Document,
-  ): RenderCandidate[] {
-    const managerCandidates = this.getManagerAnnotationCandidates(runtime, doc);
-    const domCandidates = this.getDOMAnnotationCandidates(doc);
-    return [...managerCandidates, ...domCandidates];
-  }
-
-  private getManagerAnnotationCandidates(
-    runtime: ReaderRuntime,
-    doc: Document,
-  ): RenderCandidate[] {
-    const manager = this.getAnnotationManager(runtime.reader);
-    const candidates: RenderCandidate[] = [];
-
-    for (const annotation of manager?._annotations ?? []) {
-      const payload = this.parsePayload(
-        annotation.text ?? annotation.comment ?? "",
-      );
-      if (!payload) {
-        continue;
-      }
-
-      const element = this.findAnnotationElement(doc, annotation);
-      if (element) {
-        candidates.push({ element, payload });
-      }
-    }
-
-    return candidates;
-  }
-
-  private getDOMAnnotationCandidates(doc: Document): RenderCandidate[] {
-    const selector = [
-      ".annotationLayer .freeTextAnnotation",
-      ".annotationLayer .textWidgetAnnotation",
-      ".annotationLayer [data-annotation-id]",
-      ".annotationLayer [data-id]",
-      ".annotationLayer section",
-      ".annotationLayer div",
-      ".annotationLayer textarea",
-      ".annotationLayer input",
-      ".annotationEditorLayer .freeTextEditor",
-      ".annotationEditorLayer .textEditor",
-      ".annotationEditorLayer [contenteditable='true']",
-      ".annotationEditorLayer textarea",
-      ".annotationEditorLayer input",
-      ".annotationEditorLayer *",
-      ".freeTextEditor",
-      ".textEditor",
-      "[contenteditable='true']",
-      ".annotationLayer *",
-      "[data-annotation-id]",
-      "[data-annotation-key]",
-    ].join(",");
-
-    const elements = [
-      ...doc.querySelectorAll<HTMLElement>(selector),
-      ...this.getElementsWithMathText(doc),
-    ];
-    const containers = elements
-      .map((element) => {
-        if (element.classList.contains(RENDER_CLASS)) {
-          return null;
-        }
-        const payload = this.extractPayloadFromElement(element);
-        if (!payload) {
-          return null;
-        }
-        return {
-          element: this.getAnnotationContainer(element),
-          payload,
-        };
-      })
-      .filter((candidate): candidate is RenderCandidate => Boolean(candidate));
-
-    return containers.filter(({ element, payload }, index) => {
-      if (element.classList.contains(RENDER_CLASS)) {
-        return false;
-      }
-      return (
-        containers.findIndex(
-          (candidate) =>
-            candidate.element === element &&
-            candidate.payload.encoded === payload.encoded,
-        ) === index
-      );
-    });
-  }
-
   private getElementsWithMathText(doc: Document): HTMLElement[] {
     const roots = [
       ...doc.querySelectorAll<HTMLElement>(
@@ -1165,12 +924,7 @@ export class LatexMathTool {
       while (node) {
         const text = node.nodeValue ?? "";
         const parent = node.parentElement;
-        if (
-          parent &&
-          !parent.closest(`.${RENDER_CLASS}`) &&
-          !parent.closest(`.${SOURCE_CLASS}`) &&
-          this.parsePayload(text)
-        ) {
+        if (parent && this.parsePayload(text)) {
           elements.add(parent as HTMLElement);
         }
         node = walker.nextNode();
@@ -1206,8 +960,6 @@ export class LatexMathTool {
 
   private shouldSkipRawHide(element: HTMLElement): boolean {
     if (
-      element.closest(`.${RENDER_CLASS}`) ||
-      element.closest(`.${SOURCE_CLASS}`) ||
       element.closest(`.${MANAGER_RENDER_CLASS}`) ||
       element.closest(`.${PAGE_OVERLAY_CLASS}`) ||
       element.closest(".zotero-latex-math-modal") ||
@@ -1221,51 +973,6 @@ export class LatexMathTool {
         "html,body,#viewer,#viewerContainer,.page,.annotationLayer,.annotationEditorLayer",
       ),
     );
-  }
-
-  private getAnnotationContainer(element: HTMLElement): HTMLElement {
-    return (
-      (element.closest(
-        ".freeTextAnnotation,.textWidgetAnnotation,.freeTextEditor,.textEditor,[data-annotation-id],[data-annotation-key],[data-id],[data-editor-id]",
-      ) as HTMLElement | null) ?? element
-    );
-  }
-
-  private findAnnotationElement(
-    doc: Document,
-    annotation: _ZoteroTypes.Reader.Annotation,
-  ): HTMLElement | undefined {
-    const ids = [annotation.id, (annotation as { key?: string }).key].filter(
-      (id): id is string => Boolean(id),
-    );
-
-    for (const id of ids) {
-      const escapedID = this.escapeCSSIdentifier(doc, id);
-      const escapedAttribute = this.escapeCSSAttributeValue(id);
-      const element = doc.querySelector<HTMLElement>(
-        [
-          `[data-annotation-id="${escapedAttribute}"]`,
-          `[data-annotation-key="${escapedAttribute}"]`,
-          `[data-id="${escapedAttribute}"]`,
-          `[data-editor-id="${escapedAttribute}"]`,
-          `#${escapedID}`,
-        ].join(","),
-      );
-      if (element) {
-        return this.getAnnotationContainer(element);
-      }
-    }
-
-    const payload = this.parsePayload(
-      annotation.text ?? annotation.comment ?? "",
-    );
-    if (!payload) {
-      return undefined;
-    }
-
-    return this.getDOMAnnotationCandidates(doc).find(
-      (candidate) => candidate.payload.encoded === payload.encoded,
-    )?.element;
   }
 
   private renderManagerOverlays(
@@ -1577,8 +1284,6 @@ export class LatexMathTool {
     runtime: ReaderRuntime,
     stats: {
       docCount: number;
-      domCandidateCount: number;
-      domRenderedCount: number;
       overlayCount: number;
     },
   ): void {
@@ -1631,114 +1336,6 @@ export class LatexMathTool {
       dataEditorID: element.dataset.editorId ?? "",
       text: this.getSourceText(element).slice(0, 80),
     };
-  }
-
-  private renderMathElement(
-    runtime: ReaderRuntime,
-    element: HTMLElement,
-    payload: MathPayload,
-  ): void {
-    const doc = element.ownerDocument ?? runtime.doc;
-    const renderedColor = this.getReadableColor(element);
-    let source = element.querySelector<HTMLElement>(
-      `:scope > .${SOURCE_CLASS}`,
-    );
-    if (!source) {
-      source = doc.createElement("span");
-      source.className = SOURCE_CLASS;
-      element.appendChild(source);
-    }
-    source.textContent = payload.encoded;
-
-    let wrapper = element.querySelector<HTMLElement>(
-      `:scope > .${RENDER_CLASS}`,
-    );
-    if (!wrapper) {
-      wrapper = doc.createElement("span");
-      wrapper.className = RENDER_CLASS;
-      wrapper.addEventListener("dblclick", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void this.editRenderedAnnotation(runtime, element);
-      });
-      element.appendChild(wrapper);
-    }
-
-    wrapper.classList.toggle("is-display", payload.mode === "display");
-    wrapper.classList.toggle("is-inline", payload.mode === "inline");
-    wrapper.dataset.mathMode = payload.mode;
-    wrapper.dataset.mathSource = payload.latex;
-    wrapper.style.color = renderedColor;
-    element.style.setProperty("--zotero-latex-math-color", renderedColor);
-    wrapper.innerHTML = this.renderLatex(payload.latex, payload.mode);
-    this.hideRawMathText(element);
-
-    const computedElementStyle =
-      element.ownerDocument?.defaultView?.getComputedStyle(element);
-    if (computedElementStyle?.position === "static") {
-      element.style.position = "relative";
-    }
-    element.classList.add("zotero-latex-math-annotation");
-    element.dataset.mathMode = payload.mode;
-    element.dataset.mathSource = payload.latex;
-  }
-
-  private hideRawMathText(element: HTMLElement): void {
-    for (const child of [...element.children]) {
-      const childElement = child as HTMLElement;
-      if (
-        childElement.classList.contains(RENDER_CLASS) ||
-        childElement.classList.contains(SOURCE_CLASS)
-      ) {
-        continue;
-      }
-      childElement.dataset.zoteroLatexMathHidden = "true";
-    }
-
-    for (const field of [
-      ...element.querySelectorAll<HTMLElement>(
-        "textarea,input,[contenteditable='true']",
-      ),
-    ]) {
-      if (
-        field.closest(`.${RENDER_CLASS}`) ||
-        field.closest(`.${SOURCE_CLASS}`)
-      ) {
-        continue;
-      }
-      field.dataset.zoteroLatexMathHidden = "true";
-      field.setAttribute("aria-hidden", "true");
-    }
-  }
-
-  private async editRenderedAnnotation(
-    runtime: ReaderRuntime,
-    element: HTMLElement,
-  ): Promise<void> {
-    const source = this.extractPayloadFromElement(element);
-    if (!source) {
-      return;
-    }
-
-    await this.openEditor(runtime, {
-      initial: { latex: source.latex, mode: source.mode },
-      title: "编辑 LaTeX 数学公式",
-      onSave: async (payload) => {
-        await this.updateAnnotation(runtime, element, payload.encoded);
-        this.renderMathElement(runtime, element, payload);
-      },
-    });
-  }
-
-  private async openEditor(
-    runtime: ReaderRuntime,
-    options: {
-      title: string;
-      initial: { latex: string; mode: MathMode };
-      onSave: (payload: MathPayload) => Promise<void> | void;
-    },
-  ): Promise<void> {
-    return this.openEditorInDocument(this.getEditorDocument(runtime), options);
   }
 
   private async openEditorInDocument(
@@ -1922,24 +1519,6 @@ export class LatexMathTool {
     };
   }
 
-  private async createAnnotation(
-    runtime: ReaderRuntime,
-    location: ClickLocation,
-    payload: MathPayload,
-  ): Promise<void> {
-    const manager = this.getAnnotationManager(runtime.reader);
-    if (!manager?.addAnnotation) {
-      throw new Error("Reader annotation manager is not available");
-    }
-
-    await this.createAnnotationWithManager(
-      manager,
-      location,
-      payload,
-      runtime.doc,
-    );
-  }
-
   private async createAnnotationWithManager(
     manager: AnnotationManager,
     location: ClickLocation,
@@ -1977,34 +1556,6 @@ export class LatexMathTool {
     manager._save?.(annotation, true);
   }
 
-  private async updateAnnotation(
-    runtime: ReaderRuntime,
-    element: HTMLElement,
-    encoded: string,
-  ): Promise<void> {
-    const manager = this.getAnnotationManager(runtime.reader);
-    const annotation = this.findAnnotation(runtime.reader, element);
-    if (annotation && manager) {
-      annotation.text = encoded;
-      annotation.dateModified = new Date().toISOString();
-      manager.updateAnnotations?.(
-        this.replaceManagedAnnotation(manager, annotation),
-      );
-      manager._save?.(annotation, true);
-      return;
-    }
-
-    const item = this.findAnnotationItem(runtime.reader, element);
-    if (item) {
-      item.annotationText = encoded;
-      await item.saveTx();
-      runtime.reader.setAnnotations([item]);
-      return;
-    }
-
-    throw new Error("Unable to resolve the underlying Zotero annotation");
-  }
-
   private async updateManagerAnnotation(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     annotation: _ZoteroTypes.Reader.Annotation,
@@ -2019,13 +1570,7 @@ export class LatexMathTool {
     annotation.text = payload.encoded;
     annotation.comment = payload.encoded;
     if (doc && payload.renderedSize) {
-      this.resizeAnnotationRect(
-        reader,
-        manager,
-        annotation,
-        doc,
-        payload.renderedSize,
-      );
+      this.resizeAnnotationRect(manager, annotation, doc, payload.renderedSize);
     }
     annotation.dateModified = new Date().toISOString();
     manager.updateAnnotations?.(
@@ -2088,81 +1633,6 @@ export class LatexMathTool {
     }
   }
 
-  private findAnnotation(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    element: HTMLElement,
-  ): _ZoteroTypes.Reader.Annotation | undefined {
-    const manager = this.getAnnotationManager(reader);
-    const annotationID = this.getAnnotationID(element);
-    if (annotationID) {
-      const byID = manager?._getAnnotationByID?.(annotationID);
-      if (byID) {
-        return byID;
-      }
-    }
-
-    const source = this.getSourceText(element);
-    return manager?._annotations?.find(
-      (annotation) => annotation.text === source,
-    );
-  }
-
-  private findAnnotationItem(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    element: HTMLElement,
-  ): Zotero.Item | undefined {
-    const annotationID = this.getAnnotationID(element);
-    const itemIDs = reader.annotationItemIDs ?? [];
-    for (const itemID of itemIDs) {
-      const item = Zotero.Items.get(itemID);
-      if (!item) {
-        continue;
-      }
-
-      const readerAnnotation = reader._getAnnotation(item);
-      if (
-        readerAnnotation?.id === annotationID ||
-        item.key === annotationID ||
-        item.annotationText === this.getSourceText(element)
-      ) {
-        return item;
-      }
-    }
-    return undefined;
-  }
-
-  private getClickLocation(
-    runtime: ReaderRuntime,
-    event: MouseEvent,
-  ): ClickLocation | undefined {
-    const target = event.target as Element | null;
-    const page =
-      (target?.closest(".page") as HTMLElement | null | undefined) ??
-      this.getCurrentPageElement(runtime);
-    if (!page) {
-      return undefined;
-    }
-
-    const pageIndex = this.getPageIndex(runtime.doc, page);
-    const pageRect = page.getBoundingClientRect();
-    const x = Math.max(0, event.clientX - pageRect.left);
-    const y = Math.max(0, event.clientY - pageRect.top);
-    const width = 220;
-    const height = 48;
-    const viewport = this.getPDFViewport(runtime, pageIndex);
-
-    if (viewport?.convertToPdfPoint) {
-      const start = viewport.convertToPdfPoint(x, y);
-      const end = viewport.convertToPdfPoint(x + width, y + height);
-      return {
-        pageIndex,
-        rect: [start[0], start[1], end[0], end[1]],
-      };
-    }
-
-    return { pageIndex, rect: [x, y, x + width, y + height] };
-  }
-
   private getClickLocationFromDocument(
     doc: Document,
     event: MouseEvent,
@@ -2199,21 +1669,6 @@ export class LatexMathTool {
     return { pageIndex, rect: [x, y, x + width, y + height] };
   }
 
-  private getCurrentPageElement(runtime: ReaderRuntime): HTMLElement | null {
-    const app = (runtime.win as any).PDFViewerApplication;
-    const currentPageNumber = app?.pdfViewer?.currentPageNumber;
-    if (Number.isFinite(currentPageNumber)) {
-      const page = runtime.doc.querySelector<HTMLElement>(
-        `.page[data-page-number="${currentPageNumber}"]`,
-      );
-      if (page) {
-        return page;
-      }
-    }
-
-    return runtime.doc.querySelector<HTMLElement>(".page");
-  }
-
   private getPageIndex(doc: Document, page: HTMLElement): number {
     const pageNumber = Number(page.dataset.pageNumber);
     if (Number.isFinite(pageNumber) && pageNumber > 0) {
@@ -2237,30 +1692,10 @@ export class LatexMathTool {
     return app?.pdfViewer?.getPageView?.(pageIndex)?.viewport;
   }
 
-  private getAnnotationID(element: HTMLElement): string | undefined {
-    const annotated = element.closest(
-      "[data-annotation-id],[data-annotation-key],[data-id]",
-    ) as HTMLElement | null;
-    return (
-      annotated?.dataset.annotationId ||
-      annotated?.dataset.annotationKey ||
-      annotated?.dataset.id ||
-      element.id ||
-      undefined
-    );
-  }
-
   private getSourceText(element: HTMLElement): string {
     const ownValue = this.getTextFieldValue(element);
     if (ownValue) {
       return ownValue.trim();
-    }
-
-    const source = element.querySelector<HTMLElement>(
-      `:scope > .${SOURCE_CLASS}`,
-    );
-    if (source?.textContent) {
-      return source.textContent.trim();
     }
 
     const field = [...element.querySelectorAll<HTMLElement>("textarea,input")]
@@ -2284,10 +1719,7 @@ export class LatexMathTool {
 
   private extractPayloadFromElement(element: HTMLElement): MathPayload | null {
     const sourceText =
-      element.querySelector<HTMLElement>(`:scope > .${SOURCE_CLASS}`)
-        ?.textContent ||
-      element.getAttribute("data-math-encoded") ||
-      this.getSourceText(element);
+      element.getAttribute("data-math-encoded") || this.getSourceText(element);
     return this.parsePayload(sourceText);
   }
 
@@ -2414,7 +1846,6 @@ export class LatexMathTool {
   }
 
   private resizeAnnotationRect(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
     manager: AnnotationManager,
     annotation: _ZoteroTypes.Reader.Annotation,
     doc: Document,
@@ -2437,19 +1868,6 @@ export class LatexMathTool {
     annotationPosition.rects = this.cloneIntoManagerRealm(manager, [
       resized.map((value) => Number(value)),
     ]);
-  }
-
-  private estimateFontSizeFromRect(
-    reader: _ZoteroTypes.ReaderInstance<"pdf">,
-    doc: Document,
-    pageIndex: number,
-    rect: number[],
-  ): number {
-    const runtime = this.runtimes.get(reader);
-    const viewportRect = runtime
-      ? this.getViewportRect(runtime, doc, pageIndex, rect)
-      : undefined;
-    return this.clamp(Math.round((viewportRect?.height ?? 48) * 0.42), 8, 72);
   }
 
   private clamp(value: number, min: number, max: number): number {
@@ -2600,10 +2018,6 @@ export class LatexMathTool {
     );
   }
 
-  private ensurePointerTool(reader: _ZoteroTypes.ReaderInstance<"pdf">): void {
-    this.setNativeTool(reader, { type: "pointer" });
-  }
-
   private setNativeTool(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     tool: { type: string; color?: string },
@@ -2642,35 +2056,9 @@ export class LatexMathTool {
     return `${sign}${absValue}`;
   }
 
-  private getReadableColor(element: HTMLElement): string {
-    const view = element.ownerDocument?.defaultView;
-    const candidates = [
-      ...element.querySelectorAll<HTMLElement>(
-        "textarea,input,[contenteditable='true'],span,div",
-      ),
-      element,
-    ];
-
-    for (const candidate of candidates) {
-      if (
-        candidate.classList.contains(RENDER_CLASS) ||
-        candidate.classList.contains(SOURCE_CLASS)
-      ) {
-        continue;
-      }
-
-      const color = view?.getComputedStyle(candidate)?.color;
-      if (color && color !== "transparent" && color !== "rgba(0, 0, 0, 0)") {
-        return color;
-      }
-    }
-
-    return "#111111";
-  }
-
   private disposeRuntime(runtime: ReaderRuntime): void {
     runtime.disposed = true;
-    this.deactivateInsertMode(runtime);
+    this.cancelMathInsertMode(runtime.reader);
     for (const observer of runtime.observers) {
       observer.disconnect();
     }
@@ -2697,15 +2085,6 @@ export class LatexMathTool {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
-  }
-
-  private escapeCSSIdentifier(doc: Document, value: string): string {
-    const escape = doc.defaultView?.CSS?.escape;
-    if (escape) {
-      return escape(value);
-    }
-
-    return value.replaceAll(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
 
   private escapeCSSAttributeValue(value: string): string {

@@ -9,11 +9,17 @@ type MathPayload = {
   mode: MathMode;
   latex: string;
   encoded: string;
+  renderedSize?: FormulaSize;
 };
 
 type ClickLocation = {
   pageIndex: number;
   rect: number[];
+};
+
+type FormulaSize = {
+  width: number;
+  height: number;
 };
 
 type RenderCandidate = {
@@ -65,6 +71,7 @@ const SOURCE_CLASS = "zotero-latex-math-source";
 const MANAGER_RENDER_CLASS = "zotero-latex-math-manager-render";
 const PAGE_OVERLAY_CLASS = "zotero-latex-math-page-overlay";
 const RAW_HIDDEN_CLASS = "zotero-latex-math-raw-hidden";
+const FIT_CONTENT_CLASS = "zotero-latex-math-fit-content";
 
 export class LatexMathTool {
   private toolbarHandler?: _ZoteroTypes.Reader.EventHandler<"renderToolbar">;
@@ -170,6 +177,11 @@ export class LatexMathTool {
     const win = await this.waitForPDFWindow(reader);
     if (!win?.document?.body) {
       throw new Error("PDF iframe window is not ready");
+    }
+
+    const manager = this.getAnnotationManager(reader);
+    if (manager) {
+      this.patchAnnotationManager(reader, manager);
     }
 
     const resizeHandler = () => this.scheduleRender(reader);
@@ -394,7 +406,8 @@ export class LatexMathTool {
           await this.createAnnotationWithManager(
             manager,
             location,
-            payload.encoded,
+            payload,
+            doc,
           );
           this.ensureReader(reader)
             .then((runtime) => this.scheduleRender(runtime.reader, true))
@@ -464,7 +477,11 @@ export class LatexMathTool {
         for (const annotation of annotations) {
           this.captureNativeTextAnnotation(reader, manager, annotation);
         }
-        return originalUpdateAnnotations(annotations);
+        const result = originalUpdateAnnotations(annotations);
+        if (this.hasMathAnnotation(annotations)) {
+          this.scheduleRender(reader, true);
+        }
+        return result;
       }) as typeof manager.updateAnnotations;
     }
 
@@ -477,6 +494,9 @@ export class LatexMathTool {
         for (const annotation of manager._annotations ?? annotations) {
           this.captureNativeTextAnnotation(reader, manager, annotation);
         }
+        if (this.hasMathAnnotation(manager._annotations ?? annotations)) {
+          this.scheduleRender(reader, true);
+        }
         return result;
       }) as typeof manager.setAnnotations;
     }
@@ -488,11 +508,25 @@ export class LatexMathTool {
         instant?: boolean,
       ) => {
         this.captureNativeTextAnnotation(reader, manager, annotation);
-        return originalSave(annotation, instant);
+        const result = originalSave(annotation, instant);
+        if (this.hasMathAnnotation([annotation])) {
+          this.scheduleRender(reader, true);
+        }
+        return result;
       }) as typeof manager._save;
     }
 
     this.patchedManagers.add(manager);
+  }
+
+  private hasMathAnnotation(
+    annotations: _ZoteroTypes.Reader.Annotation[] | undefined,
+  ): boolean {
+    return Boolean(
+      annotations?.some((annotation) =>
+        this.parsePayload(annotation.text ?? annotation.comment ?? ""),
+      ),
+    );
   }
 
   private async watchForNativeTextAnnotation(
@@ -561,12 +595,7 @@ export class LatexMathTool {
       initial: { latex: "", mode: "display" },
       title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
       onSave: async (payload) => {
-        annotation.text = payload.encoded;
-        annotation.dateModified = new Date().toISOString();
-        manager.updateAnnotations?.(
-          this.replaceManagedAnnotation(manager, annotation),
-        );
-        manager._save?.(annotation, true);
+        await this.updateManagerAnnotation(reader, annotation, payload, doc);
         this.ensureReader(reader)
           .then((runtime) => {
             this.scheduleRender(runtime.reader, true);
@@ -672,7 +701,7 @@ export class LatexMathTool {
         initial: { latex: "", mode: "display" },
         title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
         onSave: async (payload) => {
-          await this.createAnnotation(runtime, location, payload.encoded);
+          await this.createAnnotation(runtime, location, payload);
           this.scheduleRender(runtime.reader, true);
         },
       });
@@ -765,6 +794,16 @@ export class LatexMathTool {
       childList: true,
       subtree: true,
       characterData: true,
+      attributes: true,
+      attributeFilter: [
+        "style",
+        "class",
+        "data-annotation-id",
+        "data-annotation-key",
+        "data-id",
+        "data-editor-id",
+        "data-page-number",
+      ],
     };
 
     try {
@@ -855,6 +894,25 @@ export class LatexMathTool {
     runtime: ReaderRuntime,
     doc: Document,
   ): void {
+    const clickHandler = (event: Event) => {
+      const mouseEvent = event as MouseEvent;
+      const target = mouseEvent.target as Element | null;
+      if (
+        !target ||
+        target.closest(".zotero-latex-math-modal") ||
+        target.closest(".zotero-latex-math-editor-frame")
+      ) {
+        return;
+      }
+
+      const match = this.findMathAnnotationAtPoint(runtime, doc, mouseEvent);
+      if (!match) {
+        return;
+      }
+
+      this.selectAnnotation(runtime.reader, match.annotation.id);
+    };
+
     const handler = (event: Event) => {
       const mouseEvent = event as MouseEvent;
       const target = mouseEvent.target as Element | null;
@@ -883,17 +941,49 @@ export class LatexMathTool {
           await this.updateManagerAnnotationByID(
             runtime.reader,
             match.annotation.id,
-            payload.encoded,
+            payload,
+            doc,
           );
           this.scheduleRender(runtime.reader, true);
         },
       });
     };
 
+    doc.addEventListener("click", clickHandler, true);
     doc.addEventListener("dblclick", handler, true);
-    runtime.documentCleanups.push(() =>
-      doc.removeEventListener("dblclick", handler, true),
-    );
+    runtime.documentCleanups.push(() => {
+      doc.removeEventListener("click", clickHandler, true);
+      doc.removeEventListener("dblclick", handler, true);
+    });
+  }
+
+  private selectAnnotation(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    annotationID: string,
+  ): void {
+    const internalReader = reader._internalReader as any;
+    const ids = this.cloneValueIntoRealm([annotationID], internalReader);
+
+    if (internalReader?._state) {
+      internalReader._state.selectedAnnotationIDs = ids;
+    }
+
+    for (const view of [
+      internalReader?._primaryView,
+      internalReader?._secondaryView,
+      internalReader?._lastView,
+    ] as any[]) {
+      if (typeof view?.setSelectedAnnotationIDs === "function") {
+        try {
+          view.setSelectedAnnotationIDs(this.cloneValueIntoRealm(ids, view));
+        } catch (error) {
+          this.logError(
+            "Unable to select math annotation in reader view",
+            error,
+          );
+        }
+      }
+    }
   }
 
   private getEditorDocument(runtime: ReaderRuntime): Document {
@@ -1350,9 +1440,17 @@ export class LatexMathTool {
     this.setDatasetIfChanged(element, "mathMode", payload.mode);
     this.setDatasetIfChanged(element, "mathSource", payload.latex);
 
-    if (currentSource !== payload.latex || currentMode !== payload.mode) {
-      element.innerHTML = this.renderLatex(payload.latex, payload.mode);
+    if (
+      currentSource !== payload.latex ||
+      currentMode !== payload.mode ||
+      !element.querySelector(`:scope > .${FIT_CONTENT_CLASS}`)
+    ) {
+      element.innerHTML = `<span class="${FIT_CONTENT_CLASS}">${this.renderLatex(
+        payload.latex,
+        payload.mode,
+      )}</span>`;
     }
+    this.fitFormulaToOverlay(element, rect);
 
     element.ondblclick = (event) => {
       event.preventDefault();
@@ -1367,12 +1465,48 @@ export class LatexMathTool {
           await this.updateManagerAnnotationByID(
             runtime.reader,
             annotation.id,
-            updatedPayload.encoded,
+            updatedPayload,
+            element.ownerDocument ?? runtime.doc,
           );
           this.scheduleRender(runtime.reader, true);
         },
       });
     };
+  }
+
+  private fitFormulaToOverlay(element: HTMLElement, rect: ViewportRect): void {
+    const content = element.querySelector<HTMLElement>(
+      `:scope > .${FIT_CONTENT_CLASS}`,
+    );
+    if (!content) {
+      return;
+    }
+
+    content.style.position = "absolute";
+    content.style.transform = "";
+    content.style.left = "0";
+    content.style.top = "0";
+
+    const contentRect = content.getBoundingClientRect();
+    if (!contentRect.width || !contentRect.height) {
+      return;
+    }
+
+    const scale = this.clamp(
+      Math.min(
+        Math.max(rect.width, 1) / contentRect.width,
+        Math.max(rect.height, 1) / contentRect.height,
+      ),
+      0.1,
+      12,
+    );
+    const left = Math.max(0, (rect.width - contentRect.width * scale) / 2);
+    const top = Math.max(0, (rect.height - contentRect.height * scale) / 2);
+
+    content.style.transformOrigin = "left top";
+    content.style.transform = `scale(${scale})`;
+    content.style.left = `${left}px`;
+    content.style.top = `${top}px`;
   }
 
   private setStyleIfChanged(
@@ -1411,10 +1545,18 @@ export class LatexMathTool {
     pageIndex: number,
     rect: number[],
   ): ViewportRect | undefined {
+    const win = doc.defaultView ?? runtime.win;
     const viewport =
-      this.getPDFViewportFromWindow(doc.defaultView, pageIndex) ??
+      this.getPDFViewportFromWindow(win, pageIndex) ??
       this.getPDFViewport(runtime, pageIndex);
-    const viewportRect = viewport?.convertToViewportRectangle?.(rect) ?? rect;
+    const viewportRect =
+      viewport?.convertToViewportRectangle && win
+        ? this.toPlainNumberArray(
+            viewport.convertToViewportRectangle(
+              this.cloneNumberArrayIntoWindow(rect, win),
+            ),
+          )
+        : rect;
     if (viewportRect.length < 4) {
       return undefined;
     }
@@ -1696,7 +1838,9 @@ export class LatexMathTool {
       const mode: MathMode = displayMode.checked ? "display" : "inline";
       save.disabled = true;
       try {
-        await options.onSave(this.encodePayload(latex, mode));
+        await options.onSave(
+          this.encodePayload(latex, mode, this.measureFormulaPreview(preview)),
+        );
         close();
       } catch (error) {
         const message = this.stringifyError(error);
@@ -1781,23 +1925,32 @@ export class LatexMathTool {
   private async createAnnotation(
     runtime: ReaderRuntime,
     location: ClickLocation,
-    encoded: string,
+    payload: MathPayload,
   ): Promise<void> {
     const manager = this.getAnnotationManager(runtime.reader);
     if (!manager?.addAnnotation) {
       throw new Error("Reader annotation manager is not available");
     }
 
-    await this.createAnnotationWithManager(manager, location, encoded);
+    await this.createAnnotationWithManager(
+      manager,
+      location,
+      payload,
+      runtime.doc,
+    );
   }
 
   private async createAnnotationWithManager(
     manager: AnnotationManager,
     location: ClickLocation,
-    encoded: string,
+    payload: MathPayload,
+    doc?: Document,
   ): Promise<void> {
     const fontSize = 14;
-    const rect = location.rect;
+    const rect =
+      doc && payload.renderedSize
+        ? this.resizeLocationRect(doc, location, payload.renderedSize)
+        : location.rect;
     const rawAnnotation = {
       id: manager._generateObjectKey?.() ?? Zotero.Utilities.randomString(8),
       type: "text",
@@ -1809,8 +1962,8 @@ export class LatexMathTool {
         rotation: 0,
         rects: [rect],
       },
-      text: encoded,
-      comment: encoded,
+      text: payload.encoded,
+      comment: payload.encoded,
       tags: [],
       dateCreated: new Date().toISOString(),
       dateModified: new Date().toISOString(),
@@ -1855,15 +2008,25 @@ export class LatexMathTool {
   private async updateManagerAnnotation(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     annotation: _ZoteroTypes.Reader.Annotation,
-    encoded: string,
+    payload: MathPayload,
+    doc?: Document,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     if (!manager) {
       throw new Error("Reader annotation manager is not available");
     }
 
-    annotation.text = encoded;
-    annotation.comment = encoded;
+    annotation.text = payload.encoded;
+    annotation.comment = payload.encoded;
+    if (doc && payload.renderedSize) {
+      this.resizeAnnotationRect(
+        reader,
+        manager,
+        annotation,
+        doc,
+        payload.renderedSize,
+      );
+    }
     annotation.dateModified = new Date().toISOString();
     manager.updateAnnotations?.(
       this.replaceManagedAnnotation(manager, annotation),
@@ -1874,7 +2037,8 @@ export class LatexMathTool {
   private async updateManagerAnnotationByID(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     annotationID: string,
-    encoded: string,
+    payload: MathPayload,
+    doc?: Document,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     const annotation =
@@ -1884,7 +2048,7 @@ export class LatexMathTool {
       throw new Error("Unable to resolve the underlying Zotero annotation");
     }
 
-    await this.updateManagerAnnotation(reader, annotation, encoded);
+    await this.updateManagerAnnotation(reader, annotation, payload, doc);
   }
 
   private replaceManagedAnnotation(
@@ -1905,17 +2069,22 @@ export class LatexMathTool {
     );
   }
 
-  private cloneIntoManagerRealm(
-    manager: AnnotationManager,
-    annotation: _ZoteroTypes.Reader.Annotation,
-  ): _ZoteroTypes.Reader.Annotation {
+  private cloneIntoManagerRealm<T>(manager: AnnotationManager, value: T): T {
+    return this.cloneValueIntoRealm(value, manager._annotations);
+  }
+
+  private cloneValueIntoRealm<T>(value: T, target: object | undefined): T {
+    if (!target) {
+      return value;
+    }
+
     try {
-      return Components.utils.cloneInto(annotation, manager._annotations, {
+      return Components.utils.cloneInto(value, target, {
         cloneFunctions: false,
-      }) as _ZoteroTypes.Reader.Annotation;
+      }) as T;
     } catch (error) {
-      this.logError("Unable to clone annotation into reader realm", error);
-      return annotation;
+      this.logError("Unable to clone value into target realm", error);
+      return value;
     }
   }
 
@@ -2141,13 +2310,150 @@ export class LatexMathTool {
     return null;
   }
 
-  private encodePayload(latex: string, mode: MathMode): MathPayload {
+  private encodePayload(
+    latex: string,
+    mode: MathMode,
+    renderedSize?: FormulaSize,
+  ): MathPayload {
     const prefix = mode === "display" ? DISPLAY_PREFIX : INLINE_PREFIX;
     return {
       mode,
       latex,
       encoded: `${prefix} ${latex}`,
+      renderedSize,
     };
+  }
+
+  private measureFormulaPreview(preview: HTMLElement): FormulaSize | undefined {
+    const html = String(preview.innerHTML);
+    if (!html.trim()) {
+      return undefined;
+    }
+
+    const doc = preview.ownerDocument;
+    if (!doc?.body) {
+      return undefined;
+    }
+
+    const measure = doc.createElement("div");
+    measure.className = "zotero-latex-math-measure";
+    measure.innerHTML = html;
+    measure.style.position = "fixed";
+    measure.style.left = "-10000px";
+    measure.style.top = "-10000px";
+    measure.style.display = "inline-block";
+    measure.style.width = "max-content";
+    measure.style.height = "max-content";
+    measure.style.visibility = "hidden";
+    doc.body.appendChild(measure);
+
+    const rect = measure.getBoundingClientRect();
+    measure.remove();
+    if (!rect.width || !rect.height) {
+      return undefined;
+    }
+
+    return {
+      width: this.clamp(Math.ceil(rect.width + 16), 36, 720),
+      height: this.clamp(Math.ceil(rect.height + 10), 24, 260),
+    };
+  }
+
+  private resizeLocationRect(
+    doc: Document,
+    location: ClickLocation,
+    size: FormulaSize,
+  ): number[] {
+    const viewport = this.getPDFViewportFromWindow(
+      doc.defaultView,
+      location.pageIndex,
+    );
+    const win = doc.defaultView;
+    if (
+      !win ||
+      !viewport?.convertToViewportRectangle ||
+      !viewport.convertToPdfPoint
+    ) {
+      return [
+        location.rect[0],
+        location.rect[1],
+        location.rect[0] + size.width,
+        location.rect[1] + size.height,
+      ];
+    }
+
+    const viewportRect = this.toPlainNumberArray(
+      viewport.convertToViewportRectangle(
+        this.cloneNumberArrayIntoWindow(location.rect, win),
+      ),
+    );
+    const left = Math.min(viewportRect[0], viewportRect[2]);
+    const top = Math.min(viewportRect[1], viewportRect[3]);
+    const start = this.toPlainNumberArray(
+      viewport.convertToPdfPoint(left, top),
+    );
+    const end = this.toPlainNumberArray(
+      viewport.convertToPdfPoint(left + size.width, top + size.height),
+    );
+    return [start[0], start[1], end[0], end[1]];
+  }
+
+  private cloneNumberArrayIntoWindow(values: number[], win: Window): number[] {
+    const plainValues = values.map((value) => Number(value));
+    try {
+      return Components.utils.cloneInto(plainValues, win) as number[];
+    } catch {
+      return plainValues;
+    }
+  }
+
+  private toPlainNumberArray(values: ArrayLike<number>): number[] {
+    return Array.from({ length: values.length }, (_value, index) =>
+      Number(values[index]),
+    );
+  }
+
+  private resizeAnnotationRect(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    manager: AnnotationManager,
+    annotation: _ZoteroTypes.Reader.Annotation,
+    doc: Document,
+    size: FormulaSize,
+  ): void {
+    const position = this.getPDFPosition(annotation);
+    const rect = position?.rects?.[0];
+    if (!position || !rect) {
+      return;
+    }
+
+    const resized = this.resizeLocationRect(
+      doc,
+      { pageIndex: position.pageIndex, rect },
+      size,
+    );
+    const annotationPosition = annotation.position as {
+      rects?: number[][];
+    };
+    annotationPosition.rects = this.cloneIntoManagerRealm(manager, [
+      resized.map((value) => Number(value)),
+    ]);
+  }
+
+  private estimateFontSizeFromRect(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    doc: Document,
+    pageIndex: number,
+    rect: number[],
+  ): number {
+    const runtime = this.runtimes.get(reader);
+    const viewportRect = runtime
+      ? this.getViewportRect(runtime, doc, pageIndex, rect)
+      : undefined;
+    return this.clamp(Math.round((viewportRect?.height ?? 48) * 0.42), 8, 72);
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
   }
 
   private renderLatex(latex: string, mode: MathMode): string {

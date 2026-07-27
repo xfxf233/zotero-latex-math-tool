@@ -143,6 +143,21 @@
   color: inherit;
 }
 
+.zotero-latex-math-fit-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-block;
+  width: max-content;
+  height: max-content;
+  transform-origin: left top;
+}
+
+.zotero-latex-math-fit-content .katex-display {
+  display: inline-block;
+  width: max-content;
+}
+
 .zotero-latex-math-modal {
   position: fixed;
   inset: 0;

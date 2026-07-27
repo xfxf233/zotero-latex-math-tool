@@ -25,6 +25,8 @@ type FormulaSize = {
 type Viewport = {
   convertToPdfPoint?: (x: number, y: number) => number[];
   convertToViewportRectangle?: (rect: number[]) => number[];
+  width?: number;
+  height?: number;
 };
 
 type ViewportRect = {
@@ -349,7 +351,11 @@ export class LatexMathTool {
         return;
       }
 
-      const location = this.getClickLocationFromDocument(doc, mouseEvent);
+      const location = this.getClickLocationFromDocument(
+        reader,
+        doc,
+        mouseEvent,
+      );
       if (!location) {
         return;
       }
@@ -364,6 +370,7 @@ export class LatexMathTool {
         title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
         onSave: async (payload) => {
           await this.createAnnotationWithManager(
+            reader,
             manager,
             location,
             payload,
@@ -865,9 +872,17 @@ export class LatexMathTool {
     }
 
     const pageIndex = this.getPageIndex(doc, page);
-    const pageRect = page.getBoundingClientRect();
-    const x = event.clientX - pageRect.left;
-    const y = event.clientY - pageRect.top;
+    const viewport =
+      this.getPDFViewportFromWindow(doc.defaultView, pageIndex) ??
+      this.getPDFViewport(runtime, pageIndex);
+    const point = this.getViewportPoint(
+      page,
+      event.clientX,
+      event.clientY,
+      viewport,
+    );
+    const x = point.x;
+    const y = point.y;
     const tolerance = 8;
 
     for (const annotation of this.getMathAnnotations(runtime.reader)) {
@@ -1520,6 +1535,7 @@ export class LatexMathTool {
   }
 
   private async createAnnotationWithManager(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
     manager: AnnotationManager,
     location: ClickLocation,
     payload: MathPayload,
@@ -1528,7 +1544,7 @@ export class LatexMathTool {
     const fontSize = 14;
     const rect =
       doc && payload.renderedSize
-        ? this.resizeLocationRect(doc, location, payload.renderedSize)
+        ? this.resizeLocationRect(doc, location, payload.renderedSize, reader)
         : location.rect;
     const rawAnnotation = {
       id: manager._generateObjectKey?.() ?? Zotero.Utilities.randomString(8),
@@ -1570,7 +1586,13 @@ export class LatexMathTool {
     annotation.text = payload.encoded;
     annotation.comment = payload.encoded;
     if (doc && payload.renderedSize) {
-      this.resizeAnnotationRect(manager, annotation, doc, payload.renderedSize);
+      this.resizeAnnotationRect(
+        reader,
+        manager,
+        annotation,
+        doc,
+        payload.renderedSize,
+      );
     }
     annotation.dateModified = new Date().toISOString();
     manager.updateAnnotations?.(
@@ -1634,6 +1656,7 @@ export class LatexMathTool {
   }
 
   private getClickLocationFromDocument(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
     doc: Document,
     event: MouseEvent,
   ): ClickLocation | undefined {
@@ -1650,19 +1673,28 @@ export class LatexMathTool {
     }
 
     const pageIndex = this.getPageIndex(doc, page);
-    const pageRect = page.getBoundingClientRect();
-    const x = Math.max(0, event.clientX - pageRect.left);
-    const y = Math.max(0, event.clientY - pageRect.top);
     const width = 220;
     const height = 48;
-    const viewport = this.getPDFViewportFromWindow(doc.defaultView, pageIndex);
+    const viewport =
+      this.getPDFViewportFromWindow(doc.defaultView, pageIndex) ??
+      this.getPDFViewportFromReader(reader, pageIndex);
+    const point = this.getViewportPoint(
+      page,
+      event.clientX,
+      event.clientY,
+      viewport,
+    );
+    const x = Math.max(0, point.x);
+    const y = Math.max(0, point.y);
 
     if (viewport?.convertToPdfPoint) {
-      const start = viewport.convertToPdfPoint(x, y);
-      const end = viewport.convertToPdfPoint(x + width, y + height);
+      const start = this.toPlainNumberArray(viewport.convertToPdfPoint(x, y));
+      const end = this.toPlainNumberArray(
+        viewport.convertToPdfPoint(x + width, y + height),
+      );
       return {
         pageIndex,
-        rect: [start[0], start[1], end[0], end[1]],
+        rect: this.normalizeRect([start[0], start[1], end[0], end[1]]),
       };
     }
 
@@ -1684,12 +1716,65 @@ export class LatexMathTool {
     return this.getPDFViewportFromWindow(runtime.win, pageIndex);
   }
 
+  private getPDFViewportFromReader(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    pageIndex: number,
+  ): Viewport | undefined {
+    const internalReader = reader._internalReader as any;
+    for (const view of [
+      internalReader?._primaryView,
+      internalReader?._secondaryView,
+      internalReader?._lastView,
+    ]) {
+      const viewport = this.getPDFViewportFromWindow(
+        view?._iframeWindow ?? view?._iframe?.contentWindow,
+        pageIndex,
+      );
+      if (viewport) {
+        return viewport;
+      }
+    }
+    return undefined;
+  }
+
   private getPDFViewportFromWindow(
     win: Window | null,
     pageIndex: number,
   ): Viewport | undefined {
     const app = (win as any)?.PDFViewerApplication;
     return app?.pdfViewer?.getPageView?.(pageIndex)?.viewport;
+  }
+
+  private getViewportPoint(
+    page: HTMLElement,
+    clientX: number,
+    clientY: number,
+    viewport?: Viewport,
+  ): { x: number; y: number } {
+    // PDF.js pages can include a transparent border outside viewport (0, 0).
+    const surface =
+      page.querySelector<HTMLElement>(":scope > .canvasWrapper") ??
+      page.querySelector<HTMLElement>(".canvasWrapper") ??
+      page.querySelector<HTMLElement>("canvas");
+    const surfaceRect = surface?.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    const left = surfaceRect?.width
+      ? surfaceRect.left
+      : pageRect.left + page.clientLeft;
+    const top = surfaceRect?.height
+      ? surfaceRect.top
+      : pageRect.top + page.clientTop;
+    const renderedWidth = surfaceRect?.width || page.clientWidth;
+    const renderedHeight = surfaceRect?.height || page.clientHeight;
+    const scaleX =
+      viewport?.width && renderedWidth ? viewport.width / renderedWidth : 1;
+    const scaleY =
+      viewport?.height && renderedHeight ? viewport.height / renderedHeight : 1;
+
+    return {
+      x: (clientX - left) * scaleX,
+      y: (clientY - top) * scaleY,
+    };
   }
 
   private getSourceText(element: HTMLElement): string {
@@ -1795,11 +1880,13 @@ export class LatexMathTool {
     doc: Document,
     location: ClickLocation,
     size: FormulaSize,
+    reader?: _ZoteroTypes.ReaderInstance<"pdf">,
   ): number[] {
-    const viewport = this.getPDFViewportFromWindow(
-      doc.defaultView,
-      location.pageIndex,
-    );
+    const viewport =
+      this.getPDFViewportFromWindow(doc.defaultView, location.pageIndex) ??
+      (reader
+        ? this.getPDFViewportFromReader(reader, location.pageIndex)
+        : undefined);
     const win = doc.defaultView;
     if (
       !win ||
@@ -1827,7 +1914,7 @@ export class LatexMathTool {
     const end = this.toPlainNumberArray(
       viewport.convertToPdfPoint(left + size.width, top + size.height),
     );
-    return [start[0], start[1], end[0], end[1]];
+    return this.normalizeRect([start[0], start[1], end[0], end[1]]);
   }
 
   private cloneNumberArrayIntoWindow(values: number[], win: Window): number[] {
@@ -1845,7 +1932,17 @@ export class LatexMathTool {
     );
   }
 
+  private normalizeRect(rect: number[]): number[] {
+    return [
+      Math.min(rect[0], rect[2]),
+      Math.min(rect[1], rect[3]),
+      Math.max(rect[0], rect[2]),
+      Math.max(rect[1], rect[3]),
+    ];
+  }
+
   private resizeAnnotationRect(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
     manager: AnnotationManager,
     annotation: _ZoteroTypes.Reader.Annotation,
     doc: Document,
@@ -1861,6 +1958,7 @@ export class LatexMathTool {
       doc,
       { pageIndex: position.pageIndex, rect },
       size,
+      reader,
     );
     const annotationPosition = annotation.position as {
       rects?: number[][];

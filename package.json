@@ -1,24 +1,24 @@
 {
-  "name": "zotero-plugin-template",
+  "name": "zotero-latex-math-tool",
   "type": "module",
-  "version": "3.1.0",
-  "description": "Zotero Plugin Template",
+  "version": "0.0.29",
+  "description": "Insert, edit, and render LaTeX math equations directly on PDF pages.",
   "config": {
-    "addonName": "Zotero Plugin Template",
-    "addonID": "addontemplate@euclpts.com",
-    "addonRef": "addontemplate",
-    "addonInstance": "AddonTemplate",
-    "prefsPrefix": "extensions.zotero.addontemplate"
+    "addonName": "Zotero LaTeX Math Tool",
+    "addonID": "zotero-latex-math-tool@xfxf233.github.io",
+    "addonRef": "mathtool",
+    "addonInstance": "MathTool",
+    "prefsPrefix": "extensions.zotero.mathtool"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/windingwind/zotero-plugin-template.git"
+    "url": "git+https://github.com/xfxf233/zotero-latex-math-tool.git"
   },
-  "author": "windingwind",
+  "author": "xfxf233",
   "bugs": {
-    "url": "https://github.com/windingwind/zotero-plugin-template/issues"
+    "url": "https://github.com/xfxf233/zotero-latex-math-tool/issues"
   },
-  "homepage": "https://github.com/windingwind/zotero-plugin-template#readme",
+  "homepage": "https://github.com/xfxf233/zotero-latex-math-tool",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",
@@ -30,10 +30,12 @@
     "update-deps": "npm update --save"
   },
   "dependencies": {
+    "katex": "^0.18.1",
     "zotero-plugin-toolkit": "^5.1.0-beta.13"
   },
   "devDependencies": {
     "@types/chai": "^5.2.3",
+    "@types/katex": "^0.16.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "^24.10.0",
     "@zotero-plugin/eslint-config": "^0.6.7",

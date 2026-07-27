@@ -1,0 +1,298 @@
+.zotero-latex-math-toolbar-button {
+  min-width: 32px;
+  font-family: KaTeX_Main, "Times New Roman", serif;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.zotero-latex-math-toolbar-button.active,
+.zotero-latex-math-toolbar-button[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.zotero-latex-math-tool-insert-active {
+  cursor: crosshair !important;
+}
+
+.zotero-latex-math-annotation {
+  min-width: 24px;
+  min-height: 18px;
+  overflow: visible !important;
+  text-shadow: none !important;
+}
+
+.zotero-latex-math-annotation > [data-zotero-latex-math-hidden="true"] {
+  visibility: hidden !important;
+}
+
+.zotero-latex-math-annotation
+  [data-zotero-latex-math-hidden="true"]:is(
+    textarea,
+    input,
+    [contenteditable="true"]
+  ) {
+  color: transparent !important;
+  caret-color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.zotero-latex-math-source {
+  position: absolute !important;
+  inset: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  visibility: hidden !important;
+  white-space: pre-wrap !important;
+}
+
+.zotero-latex-math-render {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  max-width: max-content;
+  min-width: 1em;
+  min-height: 1em;
+  color: var(--zotero-latex-math-color, #111111) !important;
+  pointer-events: none;
+  transform-origin: left top;
+  visibility: visible !important;
+  white-space: nowrap;
+}
+
+.zotero-latex-math-render * {
+  visibility: visible !important;
+}
+
+.zotero-latex-math-render.is-display {
+  align-items: center;
+  justify-content: center;
+}
+
+.zotero-latex-math-render .katex-display {
+  margin: 0;
+}
+
+.zotero-latex-math-render .katex,
+.zotero-latex-math-preview .katex {
+  color: inherit;
+}
+
+.zotero-latex-math-render:hover {
+  outline: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  outline-offset: 2px;
+}
+
+.zotero-latex-math-raw-hidden {
+  color: transparent !important;
+  text-shadow: none !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.zotero-latex-math-raw-hidden::selection {
+  background: transparent !important;
+}
+
+.zotero-latex-math-raw-hidden:is(textarea, input, [contenteditable="true"]) {
+  caret-color: transparent !important;
+}
+
+.zotero-latex-math-page-overlay {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 2147483000 !important;
+  pointer-events: none !important;
+  overflow: visible !important;
+}
+
+.zotero-latex-math-manager-render {
+  position: absolute !important;
+  z-index: 2147483001 !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 24px;
+  min-height: 18px;
+  overflow: visible !important;
+  color: #111111 !important;
+  pointer-events: none !important;
+  transform-origin: left top;
+  visibility: visible !important;
+  white-space: nowrap;
+}
+
+.zotero-latex-math-manager-render,
+.zotero-latex-math-manager-render * {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.zotero-latex-math-manager-render.is-display {
+  justify-content: center;
+}
+
+.zotero-latex-math-manager-render .katex-display {
+  margin: 0;
+}
+
+.zotero-latex-math-manager-render .katex {
+  color: inherit;
+}
+
+.zotero-latex-math-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.36);
+  box-sizing: border-box;
+}
+
+.zotero-latex-math-dialog {
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(96px, auto) minmax(112px, 1fr) auto auto;
+  gap: 12px;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid #c9cdd4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  color: #20242a;
+  font: menu;
+}
+
+.zotero-latex-math-dialog h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.zotero-latex-math-input {
+  width: 100%;
+  min-height: 116px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid #aeb4bd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111418;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.zotero-latex-math-input:focus {
+  border-color: #2f6fbd;
+  outline: 2px solid rgba(47, 111, 189, 0.25);
+}
+
+.zotero-latex-math-preview {
+  min-height: 112px;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #d6d9df;
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #111418;
+  font-size: 16px;
+}
+
+.zotero-latex-math-preview.is-empty {
+  display: flex;
+  align-items: center;
+  color: #68707d;
+  font-size: 13px;
+}
+
+.zotero-latex-math-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  font-size: 13px;
+}
+
+.zotero-latex-math-mode input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.zotero-latex-math-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.zotero-latex-math-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 30px;
+  padding: 5px 12px;
+  border: 1px solid #aeb4bd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #20242a;
+  font: menu;
+  line-height: 1;
+  text-align: center;
+}
+
+.zotero-latex-math-actions button.primary {
+  border-color: #245da8;
+  background: #2f6fbd;
+  color: #ffffff;
+}
+
+.zotero-latex-math-actions button:disabled {
+  opacity: 0.55;
+}
+
+.zotero-latex-math-error {
+  color: #b3261e;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .zotero-latex-math-dialog {
+    border-color: #4e5663;
+    background: #23272f;
+    color: #eef1f5;
+  }
+
+  .zotero-latex-math-input {
+    border-color: #5f6875;
+    background: #181b20;
+    color: #f5f7fa;
+  }
+
+  .zotero-latex-math-preview {
+    border-color: #4e5663;
+    background: #181b20;
+    color: #f5f7fa;
+  }
+
+  .zotero-latex-math-actions button {
+    border-color: #5f6875;
+    background: #2c323a;
+    color: #f5f7fa;
+  }
+}

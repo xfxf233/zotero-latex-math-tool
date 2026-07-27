@@ -1,6 +1,7 @@
 import { config } from "../package.json";
 import { ColumnOptions, DialogHelper } from "zotero-plugin-toolkit";
 import hooks from "./hooks";
+import type { LatexMathTool } from "./mathTool";
 import { createZToolkit } from "./utils/ztoolkit";
 
 class Addon {
@@ -20,6 +21,7 @@ class Addon {
       rows: Array<{ [dataKey: string]: string }>;
     };
     dialog?: DialogHelper;
+    mathTool?: LatexMathTool;
   };
   // Lifecycle hooks
   public hooks: typeof hooks;

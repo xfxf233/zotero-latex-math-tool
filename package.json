@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Insert, edit, and render LaTeX math equations directly on PDF pages.",
   "config": {
-    "addonName": "Zotero LaTeX Math Tool",
+    "addonName": "Zotero Latex Math Tool",
     "addonID": "zotero-latex-math-tool@xfxf233.github.io",
     "addonRef": "mathtool",
     "addonInstance": "MathTool",

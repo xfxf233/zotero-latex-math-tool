@@ -1,5 +1,7 @@
 # Zotero LaTeX Math Tool
 
+[中文说明](README-zhCN.md)
+
 A Zotero 9 plugin that adds a LaTeX math insertion tool to the PDF reader
 toolbar. Equations are stored as Zotero free-text annotations with a small text
 protocol and rendered back onto the PDF overlay with KaTeX.
@@ -51,5 +53,5 @@ The add-on manifest targets Zotero 9:
 4. Enter plain LaTeX without `$` or `$$`.
 5. Keep `Display Mode` checked for larger block equations, or uncheck it for
    inline math.
-6. Click `插入` / `保存`.
+6. Click `Insert` / `Save`.
 7. Double-click a rendered formula to edit it later.

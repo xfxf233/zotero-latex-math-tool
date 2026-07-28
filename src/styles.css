@@ -46,7 +46,7 @@
   min-width: 24px;
   min-height: 18px;
   overflow: visible !important;
-  color: #111111 !important;
+  color: #111111;
   pointer-events: none !important;
   transform-origin: left top;
   visibility: visible !important;

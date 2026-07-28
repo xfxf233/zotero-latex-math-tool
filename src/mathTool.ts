@@ -2,6 +2,7 @@ import katexStyles from "katex/dist/katex.min.css";
 import { renderToString } from "katex";
 import { katexFontURLs } from "./katexFonts";
 import toolStyles from "./styles.css";
+import { getString } from "./utils/locale";
 
 type MathMode = "display" | "inline";
 
@@ -199,11 +200,8 @@ export class LatexMathTool {
     const button = event.doc.createElement("button");
     button.type = "button";
     button.className = "toolbar-button zotero-latex-math-toolbar-button";
-    button.title = "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f";
-    button.setAttribute(
-      "aria-label",
-      "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
-    );
+    button.title = getString("math-tool-insert-tooltip");
+    button.setAttribute("aria-label", getString("math-tool-insert-tooltip"));
     button.setAttribute("aria-pressed", "false");
     button.textContent = "\u03a3";
     button.style.minWidth = "32px";
@@ -221,10 +219,7 @@ export class LatexMathTool {
       } catch (error) {
         this.setToolbarButtonsActive(reader, false);
         this.logError("Unable to activate LaTeX insert mode", error);
-        this.showError(
-          reader,
-          "\u65e0\u6cd5\u5207\u6362\u5230 Zotero \u65b0\u589e\u6587\u5b57\u5de5\u5177\u3002\u8bf7\u91cd\u65b0\u6253\u5f00 PDF \u540e\u518d\u8bd5\u4e00\u6b21\u3002",
-        );
+        this.showError(reader, getString("math-tool-activate-error"));
       } finally {
         button.disabled = false;
       }
@@ -367,7 +362,7 @@ export class LatexMathTool {
 
       void this.openEditorInDocument(this.readerDocs.get(reader) ?? doc, {
         initial: { latex: "", mode: "display" },
-        title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
+        title: getString("math-editor-insert-title"),
         onSave: async (payload) => {
           await this.createAnnotationWithManager(
             reader,
@@ -527,7 +522,7 @@ export class LatexMathTool {
 
     await this.openEditorInDocument(doc, {
       initial: { latex: "", mode: "display" },
-      title: "\u63d2\u5165 LaTeX \u6570\u5b66\u516c\u5f0f",
+      title: getString("math-editor-insert-title"),
       onSave: async (payload) => {
         await this.updateManagerAnnotation(reader, annotation, payload, doc);
         this.ensureReader(reader)
@@ -793,7 +788,7 @@ export class LatexMathTool {
       ).stopImmediatePropagation?.();
       void this.openEditorInDocument(this.getEditorDocument(runtime), {
         initial: { latex: match.payload.latex, mode: match.payload.mode },
-        title: "编辑 LaTeX 数学公式",
+        title: getString("math-editor-edit-title"),
         onSave: async (payload) => {
           await this.updateManagerAnnotationByID(
             runtime.reader,
@@ -1055,12 +1050,30 @@ export class LatexMathTool {
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
   ): _ZoteroTypes.Reader.Annotation[] {
     const manager = this.getAnnotationManager(reader);
-    return (manager?._annotations ?? []).filter((annotation) =>
+    const annotations = (manager?._annotations ?? []).filter((annotation) =>
       Boolean(
         annotation.type === "text" &&
         this.parsePayload(annotation.text ?? annotation.comment ?? ""),
       ),
     );
+
+    for (const annotation of annotations) {
+      if (annotation.pageLabel) {
+        continue;
+      }
+      const position = this.getPDFPosition(annotation);
+      if (!manager || !position) {
+        continue;
+      }
+      annotation.pageLabel = this.getPageLabel(reader, position.pageIndex);
+      annotation.dateModified = new Date().toISOString();
+      manager.updateAnnotations?.(
+        this.replaceManagedAnnotation(manager, annotation),
+      );
+      manager._save?.(annotation, true);
+    }
+
+    return annotations;
   }
 
   private getPDFPosition(annotation: _ZoteroTypes.Reader.Annotation):
@@ -1182,7 +1195,7 @@ export class LatexMathTool {
       ).stopImmediatePropagation?.();
       void this.openEditorInDocument(this.getEditorDocument(runtime), {
         initial: { latex: payload.latex, mode: payload.mode },
-        title: "编辑 LaTeX 数学公式",
+        title: getString("math-editor-edit-title"),
         onSave: async (updatedPayload) => {
           await this.updateManagerAnnotationByID(
             runtime.reader,
@@ -1401,7 +1414,7 @@ export class LatexMathTool {
     displayMode.checked = options.initial.mode === "display";
 
     const modeText = create("span");
-    modeText.textContent = "\u5927\u516c\u5f0f\u6a21\u5f0f (Display Mode)";
+    modeText.textContent = getString("math-editor-display-mode");
     modeLabel.append(displayMode, modeText);
 
     const actions = create("div");
@@ -1409,12 +1422,14 @@ export class LatexMathTool {
 
     const cancel = create("button");
     cancel.type = "button";
-    cancel.textContent = "\u53d6\u6d88";
+    cancel.textContent = getString("math-editor-cancel");
 
     const save = create("button");
     save.type = "button";
     save.className = "primary";
-    save.textContent = options.initial.latex ? "\u4fdd\u5b58" : "\u63d2\u5165";
+    save.textContent = options.initial.latex
+      ? getString("math-editor-save")
+      : getString("math-editor-insert");
 
     actions.append(cancel, save);
     panel.append(title, input, preview, modeLabel, actions);
@@ -1438,7 +1453,7 @@ export class LatexMathTool {
       preview.classList.toggle("is-empty", latex.length === 0);
       preview.innerHTML = latex
         ? this.renderLatex(latex, mode)
-        : "\u8f93\u5165 LaTeX \u540e\u5728\u8fd9\u91cc\u9884\u89c8";
+        : getString("math-editor-empty-preview");
     };
 
     const saveFormula = async () => {
@@ -1550,6 +1565,7 @@ export class LatexMathTool {
       id: manager._generateObjectKey?.() ?? Zotero.Utilities.randomString(8),
       type: "text",
       color: "#000000",
+      pageLabel: this.getPageLabel(reader, location.pageIndex, doc),
       sortIndex: this.createSortIndex(location),
       position: {
         pageIndex: location.pageIndex,
@@ -1735,6 +1751,28 @@ export class LatexMathTool {
       }
     }
     return undefined;
+  }
+
+  private getPageLabel(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    pageIndex: number,
+    doc?: Document,
+  ): string {
+    const internalReader = reader._internalReader as any;
+    const windows = [
+      doc?.defaultView,
+      internalReader?._primaryView?._iframeWindow,
+      internalReader?._secondaryView?._iframeWindow,
+      internalReader?._lastView?._iframeWindow,
+    ];
+    for (const win of windows) {
+      const label = (win as any)?.PDFViewerApplication?.pdfViewer
+        ?._pageLabels?.[pageIndex];
+      if (label !== undefined && label !== null && String(label).length) {
+        return String(label);
+      }
+    }
+    return String(pageIndex + 1);
   }
 
   private getPDFViewportFromWindow(

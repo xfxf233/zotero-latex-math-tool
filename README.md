@@ -57,3 +57,8 @@ The add-on manifest targets Zotero 9:
    inline math.
 6. Click `Insert` / `Save`.
 7. Double-click a rendered formula to edit it later.
+
+## Acknowledgements
+
+- [Zotero Community](https://www.zotero.org/)
+- [Linux.do](https://linux.do/)

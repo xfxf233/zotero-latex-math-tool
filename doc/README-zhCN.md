@@ -49,3 +49,8 @@ npm run build
 "strict_min_version": "9.0",
 "strict_max_version": "9.0.*"
 ```
+
+## 感谢
+
+- [Zotero 社区](https://www.zotero.org/)
+- [L站](https://linux.do/)

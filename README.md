@@ -1,6 +1,8 @@
 # Zotero LaTeX Math Tool
 
-[中文说明](README-zhCN.md)
+[![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+
+[中文说明](doc/README-zhCN.md)
 
 A Zotero 9 plugin that adds a LaTeX math insertion tool to the PDF reader
 toolbar. Equations are stored as Zotero free-text annotations with a small text

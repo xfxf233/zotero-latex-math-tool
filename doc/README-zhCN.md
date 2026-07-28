@@ -1,6 +1,8 @@
 # Zotero LaTeX Math Tool
 
-[English](README.md)
+[![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+
+[English](/README.md)
 
 这是一个适用于 Zotero 9 的 LaTeX 数学公式插件。它会在 PDF 阅读器工具栏中添加数学公式按钮，并使用 KaTeX 将公式渲染到 PDF 注释层。
 

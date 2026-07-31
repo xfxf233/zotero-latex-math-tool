@@ -81,6 +81,7 @@ export class LatexMathTool {
     Array<() => void>
   >();
   private patchedManagers = new WeakSet<AnnotationManager>();
+  private patchedReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private runtimeSet = new Set<ReaderRuntime>();
   private lastRenderDiagnostics = new WeakMap<
     _ZoteroTypes.ReaderInstance,
@@ -183,6 +184,8 @@ export class LatexMathTool {
 
     this.runtimes.set(reader, runtime);
     this.runtimeSet.add(runtime);
+    this.patchReaderUninit(reader);
+    this.ensureAnnotationMetadata(reader);
     this.refreshObservedDocuments(runtime);
     this.scheduleRender(reader);
 
@@ -196,6 +199,16 @@ export class LatexMathTool {
     this.readerDocs.set(reader, event.doc);
     this.injectToolbarStyles(event.doc);
     this.watchToolbarDocument(reader, event.doc);
+
+    // `renderToolbar` can fire more than once per reader (toolbar re-renders);
+    // reuse the existing button instead of stacking duplicates.
+    const existing = event.doc.querySelector<HTMLButtonElement>(
+      ".zotero-latex-math-toolbar-button",
+    );
+    if (existing?.isConnected) {
+      this.getToolbarButtons(reader).add(existing);
+      return;
+    }
 
     const button = event.doc.createElement("button");
     button.type = "button";
@@ -439,6 +452,7 @@ export class LatexMathTool {
         for (const annotation of annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
         }
+        this.ensureAnnotationMetadata(reader);
         const result = originalUpdateAnnotations(annotations);
         if (this.hasMathAnnotation(annotations)) {
           this.scheduleRender(reader, true);
@@ -456,6 +470,7 @@ export class LatexMathTool {
         for (const annotation of manager._annotations ?? annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
         }
+        this.ensureAnnotationMetadata(reader);
         if (this.hasMathAnnotation(manager._annotations ?? annotations)) {
           this.scheduleRender(reader, true);
         }
@@ -479,6 +494,39 @@ export class LatexMathTool {
     }
 
     this.patchedManagers.add(manager);
+  }
+
+  /**
+   * Dispose the runtime when Zotero tears the reader down.
+   *
+   * `uninit()` is the common teardown path for both reader tabs and reader
+   * windows (see Zotero's `ReaderTab.close()` / `ReaderWindow.close()`), so
+   * wrapping it guarantees the MutationObservers and window listeners held by
+   * the runtime are released when a PDF tab is closed — not just when the whole
+   * plugin or window shuts down.
+   */
+  private patchReaderUninit(reader: _ZoteroTypes.ReaderInstance<"pdf">): void {
+    if (this.patchedReaders.has(reader)) {
+      return;
+    }
+    this.patchedReaders.add(reader);
+
+    const originalUninit = reader.uninit?.bind(reader);
+    if (!originalUninit) {
+      return;
+    }
+
+    reader.uninit = () => {
+      try {
+        const runtime = this.runtimes.get(reader);
+        if (runtime) {
+          this.disposeRuntime(runtime);
+        }
+      } catch (error) {
+        this.logError("Unable to dispose reader runtime", error);
+      }
+      return originalUninit();
+    };
   }
 
   private hasMathAnnotation(
@@ -1050,30 +1098,38 @@ export class LatexMathTool {
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
   ): _ZoteroTypes.Reader.Annotation[] {
     const manager = this.getAnnotationManager(reader);
-    const annotations = (manager?._annotations ?? []).filter((annotation) =>
-      Boolean(
+    return (manager?._annotations ?? []).filter(
+      (annotation) =>
         annotation.type === "text" &&
-        this.parsePayload(annotation.text ?? annotation.comment ?? ""),
-      ),
+        Boolean(this.parsePayload(annotation.text ?? annotation.comment ?? "")),
     );
+  }
 
-    for (const annotation of annotations) {
+  /**
+   * Backfill the derived `pageLabel` field for math annotations that lack it.
+   *
+   * Runs at explicit lifecycle points (reader init, annotation set/update) —
+   * never on the render path — so rendering does not write to the annotation
+   * store or cascade extra renders. In-memory only; Zotero re-derives the label
+   * when annotations are reloaded.
+   */
+  private ensureAnnotationMetadata(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): void {
+    const manager = this.getAnnotationManager(reader);
+    if (!manager) {
+      return;
+    }
+    for (const annotation of this.getMathAnnotations(reader)) {
       if (annotation.pageLabel) {
         continue;
       }
       const position = this.getPDFPosition(annotation);
-      if (!manager || !position) {
+      if (!position) {
         continue;
       }
       annotation.pageLabel = this.getPageLabel(reader, position.pageIndex);
-      annotation.dateModified = new Date().toISOString();
-      manager.updateAnnotations?.(
-        this.replaceManagedAnnotation(manager, annotation),
-      );
-      manager._save?.(annotation, true);
     }
-
-    return annotations;
   }
 
   private getPDFPosition(annotation: _ZoteroTypes.Reader.Annotation):
@@ -1152,7 +1208,7 @@ export class LatexMathTool {
   }
 
   private renderManagerOverlayElement(
-    runtime: ReaderRuntime,
+    _runtime: ReaderRuntime,
     element: HTMLElement,
     annotation: _ZoteroTypes.Reader.Annotation,
     payload: MathPayload,
@@ -1186,27 +1242,9 @@ export class LatexMathTool {
       )}</span>`;
     }
     this.fitFormulaToOverlay(element, rect);
-
-    element.ondblclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      (
-        event as Event & { stopImmediatePropagation?: () => void }
-      ).stopImmediatePropagation?.();
-      void this.openEditorInDocument(this.getEditorDocument(runtime), {
-        initial: { latex: payload.latex, mode: payload.mode },
-        title: getString("math-editor-edit-title"),
-        onSave: async (updatedPayload) => {
-          await this.updateManagerAnnotationByID(
-            runtime.reader,
-            annotation.id,
-            updatedPayload,
-            element.ownerDocument ?? runtime.doc,
-          );
-          this.scheduleRender(runtime.reader, true);
-        },
-      });
-    };
+    // Editing is handled by the document-level double-click handler
+    // (installRenderedFormulaDblClickHandler); this element has
+    // pointer-events: none, so no element-level listener would ever fire.
   }
 
   private fitFormulaToOverlay(element: HTMLElement, rect: ViewportRect): void {
@@ -1315,6 +1353,12 @@ export class LatexMathTool {
       overlayCount: number;
     },
   ): void {
+    // Diagnostics walk every text node in the viewer; never run them in
+    // production, where they would be pure overhead on every render pass.
+    if (__env__ !== "development") {
+      return;
+    }
+
     const mathAnnotations = this.getMathAnnotations(runtime.reader);
     if (!mathAnnotations.length) {
       return;
@@ -2193,8 +2237,15 @@ export class LatexMathTool {
   }
 
   private disposeRuntime(runtime: ReaderRuntime): void {
+    if (runtime.disposed) {
+      return;
+    }
     runtime.disposed = true;
-    this.cancelMathInsertMode(runtime.reader);
+    try {
+      this.cancelMathInsertMode(runtime.reader);
+    } catch (error) {
+      this.logError("Unable to cancel math insert mode on dispose", error);
+    }
     for (const observer of runtime.observers) {
       observer.disconnect();
     }
@@ -2204,9 +2255,13 @@ export class LatexMathTool {
     }
     runtime.documentCleanups = [];
     runtime.observedDocs.clear();
-    runtime.win.removeEventListener("resize", runtime.resizeHandler);
-    if (runtime.renderTimer) {
-      runtime.win.clearTimeout(runtime.renderTimer);
+    try {
+      runtime.win.removeEventListener("resize", runtime.resizeHandler);
+      if (runtime.renderTimer) {
+        runtime.win.clearTimeout(runtime.renderTimer);
+      }
+    } catch (error) {
+      this.logError("Unable to clean up reader window listeners", error);
     }
     for (const doc of this.getRuntimeDocuments(runtime)) {
       doc.getElementById(STYLE_ID)?.remove();

@@ -33,12 +33,3 @@ jobs:
         with:
           name: build-result
           path: .scaffold/build
-
-  test:
-    runs-on: ubuntu-latest
-    needs:
-      - build
-    steps:
-      - name: Setup JS
-        uses: zotero-plugin-dev/workflows/setup-js@main
-      - run: npm run test

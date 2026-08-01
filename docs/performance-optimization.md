@@ -27,14 +27,14 @@ renderMathAnnotations (mathTool.ts:773)
 
 ## 二、已完成的优化（提交 df1bcac）
 
-| 项                                                | 效果                                                                            |
-| ------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `logRenderDiagnostics` 按 `__env__` 门控          | 生产环境不再每次渲染做 2 次全量 TreeWalker + JSON.stringify                     |
-| `getMathAnnotations` 纯化                         | 渲染路径不再写 DB / 改 `dateModified`，消除首渲染的 `scheduleRender(true)` 风暴 |
-| `renderIfNeeded` 短路（调度层）                   | 无标注且无残留 overlay 时跳过全量扫描；有标注/有 overlay 时走原渲染路径          |
-| `scheduleRender` repeat 3 次 → 1 次               | 插入/编辑后兜底渲染由 250/750/1500ms 减为单次 750ms，observer 兜底晚到内容       |
-| `getElementsWithMathText` 去 TreeWalker           | 真机确认标注原文在 textarea/input 控件内，只扫控件、不再全文档扫描（见 P1）       |
-| `renderManagerOverlays` 跳过无标注源文档          | 只渲染含标注原文控件的文档，隐藏重复视图不再白建 overlay（见 P1）                 |
+| 项                                       | 效果                                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `logRenderDiagnostics` 按 `__env__` 门控 | 生产环境不再每次渲染做 2 次全量 TreeWalker + JSON.stringify                     |
+| `getMathAnnotations` 纯化                | 渲染路径不再写 DB / 改 `dateModified`，消除首渲染的 `scheduleRender(true)` 风暴 |
+| `renderIfNeeded` 短路（调度层）          | 无标注且无残留 overlay 时跳过全量扫描；有标注/有 overlay 时走原渲染路径         |
+| `scheduleRender` repeat 3 次 → 1 次      | 插入/编辑后兜底渲染由 250/750/1500ms 减为单次 750ms，observer 兜底晚到内容      |
+| `getElementsWithMathText` 去 TreeWalker  | 真机确认标注原文在 textarea/input 控件内，只扫控件、不再全文档扫描（见 P1）     |
+| `renderManagerOverlays` 跳过无标注源文档 | 只渲染含标注原文控件的文档，隐藏重复视图不再白建 overlay（见 P1）               |
 
 > ✅ 以上四项改动均已实现、构建通过、**真机验证通过**，均已提交（a810086 + 后续提交）。
 

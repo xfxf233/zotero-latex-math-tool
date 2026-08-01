@@ -46,6 +46,9 @@ type ReaderRuntime = {
   documentCleanups: Array<() => void>;
   resizeHandler: EventListener;
   renderTimer?: number;
+  toolMonitorTimer?: number;
+  lastScale?: number;
+  syncRAF?: number;
   disposed: boolean;
 };
 
@@ -76,6 +79,7 @@ export class LatexMathTool {
   private readerDocs = new WeakMap<_ZoteroTypes.ReaderInstance, Document>();
   private watchedToolbarDocs = new WeakSet<Document>();
   private nativeTextInsertReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
+  private activatingReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private directInsertCleanups = new WeakMap<
     _ZoteroTypes.ReaderInstance,
     Array<() => void>
@@ -86,6 +90,18 @@ export class LatexMathTool {
   private lastRenderDiagnostics = new WeakMap<
     _ZoteroTypes.ReaderInstance,
     string
+  >();
+  private mathAnnotationCache = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    boolean
+  >();
+  private mathAnnotationCacheCounts = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    number
+  >();
+  private mathModeBaselineTools = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    string | undefined
   >();
 
   public startup(): void {
@@ -221,12 +237,18 @@ export class LatexMathTool {
     button.style.fontSize = "18px";
     button.style.fontWeight = "700";
     button.addEventListener("click", async () => {
-      button.disabled = true;
+      // Toggle-off must win immediately: while math mode is armed, clicking Σ
+      // again cancels it. The button is never disabled, so a rapid second click
+      // cannot be swallowed by an in-flight activation.
+      if (this.nativeTextInsertReaders.has(reader)) {
+        this.cancelMathInsertMode(reader);
+        return;
+      }
+      if (this.activatingReaders.has(reader)) {
+        return;
+      }
+      this.activatingReaders.add(reader);
       try {
-        if (this.nativeTextInsertReaders.has(reader)) {
-          this.cancelMathInsertMode(reader);
-          return;
-        }
         this.setToolbarButtonsActive(reader, true);
         await this.activateNativeTextInsertMode(reader);
       } catch (error) {
@@ -234,7 +256,7 @@ export class LatexMathTool {
         this.logError("Unable to activate LaTeX insert mode", error);
         this.showError(reader, getString("math-tool-activate-error"));
       } finally {
-        button.disabled = false;
+        this.activatingReaders.delete(reader);
       }
     });
     this.getToolbarButtons(reader).add(button);
@@ -253,24 +275,30 @@ export class LatexMathTool {
     }
     this.watchedToolbarDocs.add(doc);
 
-    doc.addEventListener(
-      "click",
-      (event) => {
-        const target = event.target as Element | null;
-        const button = target?.closest(
-          'button,[role="button"],toolbarbutton',
-        ) as HTMLElement | null;
-        if (
-          !button ||
-          button.classList.contains("zotero-latex-math-toolbar-button")
-        ) {
-          return;
-        }
+    // Zotero's toolbar may activate a tool on `pointerdown`/`mousedown` and
+    // suppress the resulting `click`, so a click-only listener would miss the
+    // switch and leave math insert mode armed. Listen on all three; the checks
+    // are cheap and `cancelMathInsertMode` is idempotent.
+    const cancelOnToolbarAction = (event: Event) => {
+      const target = event.target as Element | null;
+      const button = target?.closest(
+        'button,[role="button"],toolbarbutton',
+      ) as HTMLElement | null;
+      if (
+        !button ||
+        button.classList.contains("zotero-latex-math-toolbar-button")
+      ) {
+        return;
+      }
 
-        this.cancelMathInsertMode(reader);
-      },
-      true,
-    );
+      // Preserve the native tool: the user's click will select it, so math
+      // insert mode must not reset the reader back to the pointer tool.
+      this.cancelMathInsertMode(reader, { preserveNativeTool: true });
+    };
+
+    for (const eventName of ["pointerdown", "mousedown", "click"]) {
+      doc.addEventListener(eventName, cancelOnToolbarAction, true);
+    }
   }
 
   private getToolbarButtons(
@@ -308,6 +336,7 @@ export class LatexMathTool {
     this.setToolbarButtonsActive(reader, true);
     this.setNativeTool(reader, { type: "pointer" });
     this.installDirectPDFClickHandlers(reader, manager);
+    this.startToolMonitor(reader);
 
     this.ensureReader(reader).catch((error) =>
       this.logError(
@@ -319,7 +348,9 @@ export class LatexMathTool {
 
   private cancelMathInsertMode(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    options?: { preserveNativeTool?: boolean },
   ): void {
+    this.stopToolMonitor(reader);
     for (const cleanup of this.directInsertCleanups.get(reader) ?? []) {
       cleanup();
     }
@@ -332,7 +363,75 @@ export class LatexMathTool {
 
     this.nativeTextInsertReaders.delete(reader);
     this.setToolbarButtonsActive(reader, false);
-    this.setNativeTool(reader, { type: "pointer" });
+    // When the user switched to another native tool on their own, keep their
+    // selection instead of forcing the pointer tool back.
+    if (!options?.preserveNativeTool) {
+      this.setNativeTool(reader, { type: "pointer" });
+    }
+  }
+
+  /**
+   * While math insert mode is armed the reader's native tool is kept at
+   * `pointer`. If the user picks another tool (toolbar click missed by the
+   * document listeners, keyboard shortcut, context menu, …) `_state.tool`
+   * changes and math mode must be abandoned so a later PDF click doesn't open
+   * the LaTeX editor. Runs only while math mode is active, so it is off the
+   * render path entirely.
+   *
+   * The first tick captures the settled tool state as the baseline instead of
+   * assuming `pointer`: if Zotero's `setTool` does not synchronise `_state.tool`
+   * the moment math mode arms, comparing against a hard-coded `pointer` would
+   * cancel math mode immediately and break insertion. Only a *change* away from
+   * the baseline counts as the user switching tools.
+   */
+  private startToolMonitor(reader: _ZoteroTypes.ReaderInstance<"pdf">): void {
+    this.stopToolMonitor(reader);
+    const runtime = this.runtimes.get(reader);
+    if (!runtime || runtime.disposed) {
+      return;
+    }
+    let baseline: string | undefined;
+    let deviationTicks = 0;
+    runtime.toolMonitorTimer = runtime.win.setInterval(() => {
+      if (runtime.disposed || !this.nativeTextInsertReaders.has(reader)) {
+        this.stopToolMonitor(reader);
+        return;
+      }
+      const current = this.getCurrentToolType(reader);
+      if (baseline === undefined) {
+        baseline = current;
+        this.mathModeBaselineTools.set(reader, current);
+        return;
+      }
+      // Require two consecutive deviated ticks (~400ms) before cancelling:
+      // Zotero can transiently reset the tool (e.g. while an annotation editor
+      // initialises) and a single tick would cancel math mode for no reason.
+      if (current !== baseline) {
+        deviationTicks += 1;
+        if (deviationTicks >= 2) {
+          this.cancelMathInsertMode(reader, { preserveNativeTool: true });
+        }
+      } else {
+        deviationTicks = 0;
+      }
+    }, 200);
+  }
+
+  private stopToolMonitor(reader: _ZoteroTypes.ReaderInstance<"pdf">): void {
+    this.mathModeBaselineTools.delete(reader);
+    const runtime = this.runtimes.get(reader);
+    if (!runtime || runtime.toolMonitorTimer === undefined) {
+      return;
+    }
+    runtime.win.clearInterval(runtime.toolMonitorTimer);
+    runtime.toolMonitorTimer = undefined;
+  }
+
+  private getCurrentToolType(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): string | undefined {
+    const internalReader = (reader as any)._internalReader as any;
+    return internalReader?._state?.tool?.type;
   }
 
   private installDirectPDFClickHandlers(
@@ -350,6 +449,21 @@ export class LatexMathTool {
 
     const handler = (event: Event) => {
       if (handled || !this.nativeTextInsertReaders.has(reader)) {
+        return;
+      }
+
+      // If the user has already switched to another native annotation tool,
+      // abandon the pending math insert and let that tool handle this click
+      // instead of opening the LaTeX editor. This closes the race window where
+      // the tool-monitor tick hasn't fired yet. The baseline is undefined until
+      // the monitor's first tick, in which case we skip the check rather than
+      // risk cancelling on a tool state that has not settled yet.
+      const baseline = this.mathModeBaselineTools.get(reader);
+      if (
+        baseline !== undefined &&
+        this.getCurrentToolType(reader) !== baseline
+      ) {
+        this.cancelMathInsertMode(reader, { preserveNativeTool: true });
         return;
       }
 
@@ -553,6 +667,7 @@ export class LatexMathTool {
     }
 
     this.nativeTextInsertReaders.delete(reader);
+    this.stopToolMonitor(reader);
     this.setToolbarButtonsActive(reader, false);
     this.setNativeTool(reader, { type: "pointer" });
     void this.completeNativeMathAnnotation(reader, annotation);
@@ -705,6 +820,34 @@ export class LatexMathTool {
     return false;
   }
 
+  private getCurrentScale(runtime: ReaderRuntime): number | undefined {
+    const app = (runtime.win as any)?.PDFViewerApplication;
+    if (app?.pdfViewer?.currentScale !== undefined) {
+      return app.pdfViewer.currentScale;
+    }
+    return app?.pdfViewer?.getPageView?.(0)?.viewport?.scale;
+  }
+
+  /**
+   * Re-run the render once per animation frame while a zoom is in progress.
+   * The full render is idempotent and cheap when nothing changed, and the
+   * short-circuits in `renderIfNeeded` make the common no-math case a no-op.
+   * This is triggered only by scale changes, so it never fires during text
+   * selection or other non-zoom DOM churn.
+   */
+  private scheduleOverlaySync(runtime: ReaderRuntime): void {
+    if (runtime.syncRAF !== undefined || runtime.disposed) {
+      return;
+    }
+    runtime.syncRAF = runtime.win.requestAnimationFrame(() => {
+      runtime.syncRAF = undefined;
+      if (runtime.disposed) {
+        return;
+      }
+      this.renderIfNeeded(runtime);
+    });
+  }
+
   private refreshObservedDocuments(runtime: ReaderRuntime): void {
     for (const doc of this.getRuntimeDocuments(runtime)) {
       if (runtime.observedDocs.has(doc) || !doc.body) {
@@ -722,6 +865,16 @@ export class LatexMathTool {
           if (this.shouldIgnoreMutations(mutations)) {
             return;
           }
+          this.hideNewRawMathText(runtime, mutations);
+          // A scale change means the page re-render was a zoom: the overlay
+          // pixel rects are stale until re-positioned. Tracking the scale lets
+          // us re-sync promptly during the zoom instead of only after it
+          // settles (the debounced render), avoiding visible formula drift/flash.
+          const scale = this.getCurrentScale(runtime);
+          if (scale !== undefined && scale !== runtime.lastScale) {
+            runtime.lastScale = scale;
+            this.scheduleOverlaySync(runtime);
+          }
           this.scheduleRender(runtime.reader);
         });
         observer.observe(
@@ -733,6 +886,83 @@ export class LatexMathTool {
         this.logError("Unable to observe reader document", error);
       }
     }
+  }
+
+  /**
+   * Hide freshly-inserted raw math text before the next paint, without waiting
+   * for the debounced render pass.
+   *
+   * pdf.js rebuilds the annotation layer (re-creating the `textarea` controls
+   * that hold the raw `[[math:…]]` text) on zoom and re-render. Those new
+   * controls lack the hidden class, and the 50ms debounce keeps getting reset
+   * during a continuous zoom, so the raw text would otherwise stay visible for
+   * the whole gesture. The MutationObserver fires before paint, so hiding the
+   * added controls here removes the flash. Only the mutation's added nodes are
+   * inspected — no full-document scan.
+   */
+  private hideNewRawMathText(
+    runtime: ReaderRuntime,
+    mutations: MutationRecord[],
+  ): void {
+    if (!this.readerHasMath(runtime.reader)) {
+      return;
+    }
+    for (const mutation of mutations) {
+      if (mutation.type !== "childList") {
+        continue;
+      }
+      for (const node of mutation.addedNodes) {
+        if (node && node.nodeType === 1) {
+          this.hideMathTextFields(node as Element);
+        }
+      }
+    }
+  }
+
+  private hideMathTextFields(root: Element): void {
+    const tag = root.localName.toLowerCase();
+    if (tag === "textarea" || tag === "input") {
+      this.hideMathTextField(root as HTMLElement);
+      return;
+    }
+    for (const field of root.querySelectorAll<HTMLElement>("textarea,input")) {
+      this.hideMathTextField(field);
+    }
+  }
+
+  private hideMathTextField(field: HTMLElement): void {
+    if (
+      field.classList.contains(RAW_HIDDEN_CLASS) ||
+      this.shouldSkipRawHide(field)
+    ) {
+      return;
+    }
+    const value = this.getTextFieldValue(field);
+    if (value && this.parsePayload(value)) {
+      field.classList.add(RAW_HIDDEN_CLASS);
+      field.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  /**
+   * Cheap "does this reader hold any math annotation" check for the observer
+   * hot path. `_annotations.length` is the invalidation key, so adds/deletes
+   * recompute while the steady state costs a single property read plus map
+   * lookups — never a full scan on every mutation batch.
+   */
+  private readerHasMath(reader: _ZoteroTypes.ReaderInstance<"pdf">): boolean {
+    const manager = this.getAnnotationManager(reader);
+    const count = manager?._annotations?.length ?? 0;
+    if (this.mathAnnotationCacheCounts.get(reader) === count) {
+      const cached = this.mathAnnotationCache.get(reader);
+      if (cached !== undefined) {
+        return cached;
+      }
+    }
+    const has = this.getMathAnnotations(reader).length > 0;
+    this.mathAnnotationCacheCounts.set(reader, count);
+    this.mathAnnotationCache.set(reader, has);
+    return has;
   }
 
   private createMutationObserverOptions(win: Window): MutationObserverInit {
@@ -1746,13 +1976,16 @@ export class LatexMathTool {
     event: MouseEvent,
   ): ClickLocation | undefined {
     const target = event.target as Element | null;
+    // The click must land on an actual `.page` element. The toolbar lives in
+    // the same document as the pages, so without this requirement a toolbar
+    // click (e.g. on the Σ button while math insert mode is armed) would fall
+    // through to the first `.page` and wrongly open the editor.
     const page =
       (target?.closest(".page") as HTMLElement | null | undefined) ??
       (doc.elementFromPoint(event.clientX, event.clientY)?.closest(".page") as
         | HTMLElement
         | null
-        | undefined) ??
-      doc.querySelector<HTMLElement>(".page");
+        | undefined);
     if (!page) {
       return undefined;
     }
@@ -2228,15 +2461,18 @@ export class LatexMathTool {
     tool: { type: string; color?: string },
   ): void {
     const internalReader = reader._internalReader as any;
-    if (typeof internalReader?.setTool === "function") {
-      internalReader.setTool(tool);
-      return;
-    }
-
+    // Always write `_state.tool` directly: if `internalReader.setTool` exists
+    // but does not synchronise `_state.tool`, the previously-selected native
+    // tool would keep its toolbar highlight and math mode would look like it is
+    // selected alongside the native tool. Setting the source of truth up front
+    // guarantees the state; the method calls below still give Zotero's own
+    // plumbing a chance to propagate the change to the toolbar/views.
     if (internalReader?._state) {
       internalReader._state.tool = tool;
     }
-
+    if (typeof internalReader?.setTool === "function") {
+      internalReader.setTool(tool);
+    }
     const primaryView = internalReader?._primaryView as any;
     if (typeof primaryView?.setTool === "function") {
       primaryView.setTool(tool);
@@ -2284,6 +2520,10 @@ export class LatexMathTool {
       runtime.win.removeEventListener("resize", runtime.resizeHandler);
       if (runtime.renderTimer) {
         runtime.win.clearTimeout(runtime.renderTimer);
+      }
+      if (runtime.syncRAF !== undefined) {
+        runtime.win.cancelAnimationFrame(runtime.syncRAF);
+        runtime.syncRAF = undefined;
       }
     } catch (error) {
       this.logError("Unable to clean up reader window listeners", error);

@@ -52,6 +52,47 @@ Zotero 9 插件：在 PDF 阅读器工具栏加 Σ 按钮，点击后指定位�
 - `renderManagerOverlays` 跳过无标注源文档：只渲染含标注原文控件的文档，隐藏重复视图不再白建
   overlay；dev 实测 `overlayCount` 4→2（7a0e286）。
 
+### 本会话 bug 修复（已提交，均已真机验证通过）
+
+均未改动红线四方法。原始文本缩放闪现、公式缩放位移、Σ 二次点击、双高亮、工具切换
+均已真机确认修复。
+
+1. **连续缩放原始文本闪现**（已确认修复）：MutationObserver 回调里同步（paint 前）扫描新增节点、
+   立即重新加隐藏类（`hideNewRawMathText`）；`readerHasMath` 缓存 O(1) 短路。
+2. **缩放时公式位移/闪现**（真机反馈，新修复）：缩放时 pdf.js 重排页面，覆盖层像素坐标变旧，50ms
+   防抖被连续重置、缩放结束才纠正。修复：观察器里检测 `pdfViewer.currentScale` 变化（只发生在缩放，
+   不影响文本选择），用 rAF 节流一帧一次 `renderIfNeeded` 让公式逐帧跟随（`scheduleOverlaySync`）。
+3. **切其他原生工具未取消数学模式**（已确认修复）：工具栏监听改为 pointerdown/mousedown/click 三者；
+   新增 tool monitor（每 200ms 检查 `_state.tool` 偏离基线即取消，**连续 2 次偏离才取消**防误杀，
+   保留用户选中的工具）；PDF 点击处理器兜底。`cancelMathInsertMode` 新增 `preserveNativeTool`。
+4. **点 Σ 再点 Σ 取消却打开 latex**（真机反馈，新修复）：根因是工具栏与页面在同一文档，数学模式
+   激活时装的 PDF 点击处理器会命中 Σ 按钮点击，`getClickLocationFromDocument` 的
+   `doc.querySelector(".page")` 兜底把它回退成"第一个 page"。修复：去掉该兜底，非 `.page` 上的点击
+   不再打开编辑器。
+5. **点其他工具再点 Σ 双高亮**（真机反馈，新修复）：`setNativeTool` 若 `internalReader.setTool` 存在
+   会提前 return、不直接写 `_state.tool`，导致原生工具停留在原高亮。修复：始终先直接写
+   `_state.tool`，再调 setTool/view.setTool 让 Zotero 自家管道有机会传播。
+   另：Σ 按钮点击改用 `activatingReaders` 守卫而非 disabled，避免激活期间禁用窗口吞掉快速二次点击。
+   ⚠️ 基线机制：monitor 首个 tick 捕获 `_state.tool` 作为基线（不硬编码 pointer，防 setTool 未同步
+   state 导致误杀），PDF 点击兜底只在基线已捕获后生效。
+
+## 经验教训（本会话沉淀，勿再踩）
+
+1. **Zotero 事件/DOM 结构，真机验证前勿假设**。本会话真机反馈揭示的实际结构：
+   - 工具栏与 PDF 页面在**同一文档**（`event.doc` 里同时有 `.page`），PDF 点击处理器会命中工具栏
+     点击 → 非 `.page` 上的点击必须 return，不能回退到"第一个 page"。
+   - Zotero 工具栏可能在 `pointerdown`/`mousedown` 就切换工具并抑制 `click`，只监听 click 会漏。
+   - `internalReader.setTool` 存在但**可能不同步 `_state.tool`**；`_state.tool` 才是工具状态真相来源。
+   - 结论：涉及事件/DOM/state 的判定，先让用户真机验证，别按"应该怎样"写。
+2. **防抖在连续事件流里会被反复重置**（缩放/滚动），渲染延迟到事件流结束才发生。需要时按**信号类型**
+   针对性提速：本会话用 `pdfViewer.currentScale` 变化识别缩放 → rAF 一帧一次渲染；不要全局缩短防抖
+   （会伤文本选择等其它场景）。
+3. **MutationObserver 回调在 paint 前执行**，可用来消除渲染闪烁（同步重隐藏新插入的原文节点）。
+4. **性能敏感热路径守则**：observer 回调、渲染路径的每次新增判断都要 O(1) 短路（如 `readerHasMath`
+   以 `_annotations.length` 作失效键），且只在确实有数学标注时才做事。
+5. **用"基线 + 连续 N 次偏离"而非硬编码**判定状态切换（tool monitor 用基线 `_state.tool` + 连续 2 次
+   偏离），避免 Zotero 内部短暂重同步导致误杀。
+
 ## 性能优化路线图
 
 详细分析见 `docs/performance-optimization.md`（含真机 DOM 结构、量化验证结果、dev 抓 DOM 方法）。

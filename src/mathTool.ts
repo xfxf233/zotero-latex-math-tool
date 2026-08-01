@@ -663,18 +663,46 @@ export class LatexMathTool {
 
     runtime.renderTimer = runtime.win.setTimeout(() => {
       runtime.renderTimer = undefined;
-      this.renderMathAnnotations(runtime);
+      this.renderIfNeeded(runtime);
     }, 50);
 
     if (repeat) {
-      for (const delay of [250, 750, 1500]) {
-        runtime.win.setTimeout(() => {
-          if (!runtime.disposed) {
-            this.renderMathAnnotations(runtime);
-          }
-        }, delay);
+      runtime.win.setTimeout(() => {
+        if (!runtime.disposed) {
+          this.renderIfNeeded(runtime);
+        }
+      }, 750);
+    }
+  }
+
+  /**
+   * Only run the full render pass when there is math to display or stale
+   * overlays to clean up.
+   *
+   * The MutationObserver fires on every PDF.js DOM change, so on annotation-
+   * free PDFs the render path would otherwise run its full document scan on
+   * each change. Skip it when there is neither an active math annotation nor
+   * any leftover overlay — rendering then has nothing to do. Once an overlay
+   * exists (or an annotation is present) the original render path runs
+   * unchanged, so cleanup of removed annotations is preserved.
+   */
+  private renderIfNeeded(runtime: ReaderRuntime): void {
+    if (
+      this.getMathAnnotations(runtime.reader).length === 0 &&
+      !this.hasAnyManagerOverlay(runtime)
+    ) {
+      return;
+    }
+    this.renderMathAnnotations(runtime);
+  }
+
+  private hasAnyManagerOverlay(runtime: ReaderRuntime): boolean {
+    for (const doc of this.getPDFPageDocuments(runtime)) {
+      if (doc.querySelector(`.${MANAGER_RENDER_CLASS}`)) {
+        return true;
       }
     }
+    return false;
   }
 
   private refreshObservedDocuments(runtime: ReaderRuntime): void {
@@ -957,38 +985,21 @@ export class LatexMathTool {
   }
 
   private getElementsWithMathText(doc: Document): HTMLElement[] {
-    const roots = [
-      ...doc.querySelectorAll<HTMLElement>(
-        "#viewerContainer,#viewer,.page,.annotationLayer,.annotationEditorLayer",
-      ),
-    ];
-    const searchRoots = roots.length ? roots : [doc.body].filter(Boolean);
+    // The raw math source always lives in a free-text annotation control
+    // (Zotero renders text annotations as
+    //   <textarea class="textAnnotation" data-id="<annotationID>">…</textarea>
+    // with the `[[math:…]]` text in the control's value; confirmed on-device).
+    // Scan only those controls — a full-document TreeWalker over every text
+    // node in the viewer was a hot-path cost on each render pass.
     const elements = new Set<HTMLElement>();
-
-    for (const root of searchRoots) {
-      for (const field of [
-        ...(root.querySelectorAll("textarea,input") as NodeListOf<HTMLElement>),
-      ]) {
-        const value = this.getTextFieldValue(field);
-        if (value && this.parsePayload(value)) {
-          elements.add(field);
-        }
-      }
-
-      const textNodeFilter =
-        doc.defaultView?.NodeFilter.SHOW_TEXT ?? NodeFilter.SHOW_TEXT;
-      const walker = doc.createTreeWalker(root, textNodeFilter);
-      let node = walker.nextNode();
-      while (node) {
-        const text = node.nodeValue ?? "";
-        const parent = node.parentElement;
-        if (parent && this.parsePayload(text)) {
-          elements.add(parent as HTMLElement);
-        }
-        node = walker.nextNode();
+    for (const field of [
+      ...doc.querySelectorAll<HTMLElement>("textarea,input"),
+    ]) {
+      const value = this.getTextFieldValue(field);
+      if (value && this.parsePayload(value)) {
+        elements.add(field);
       }
     }
-
     return [...elements];
   }
 

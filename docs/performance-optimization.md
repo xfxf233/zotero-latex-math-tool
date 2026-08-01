@@ -34,20 +34,27 @@ renderMathAnnotations (mathTool.ts:773)
 | `renderIfNeeded` 短路（调度层）                   | 无标注且无残留 overlay 时跳过全量扫描；有标注/有 overlay 时走原渲染路径          |
 | `scheduleRender` repeat 3 次 → 1 次               | 插入/编辑后兜底渲染由 250/750/1500ms 减为单次 750ms，observer 兜底晚到内容       |
 | `getElementsWithMathText` 去 TreeWalker           | 真机确认标注原文在 textarea/input 控件内，只扫控件、不再全文档扫描（见 P1）       |
+| `renderManagerOverlays` 跳过无标注源文档          | 只渲染含标注原文控件的文档，隐藏重复视图不再白建 overlay（见 P1）                 |
 
-> ⚠️ 以上三项改动已实现、构建通过，**待真机验证**（验证步骤见文末）。
+> ✅ 以上四项改动均已实现、构建通过、**真机验证通过**，均已提交（a810086 + 后续提交）。
 
 ## 三、剩余可优化项（按优先级）
 
-### P1：`renderManagerOverlays` 的 O(标注×文档) 内层循环
+### ✅ 已做：`renderManagerOverlays` 跳过无标注源文档（基于真机结构）
 
-- 位置：mathTool.ts:1069。每个文档、每个标注都重算 `getPDFPosition`（realm 克隆）、`parsePayload`（字符串 indexOf）、`findPageElement`（querySelector）、`getViewportRect`。
-- 改进方向（低风险）：每标注的 payload/position 结果按 `annotation.id` 缓存（annotation 对象不变则可复用）；`findPageElement` 改为"按 pageIndex 一次取页面集合"而非每次 querySelector。
-- 风险：中。缓存需在 annotation 更新时失效；不要引入对 DOM 属性的假设。
-- **真机观测**（实测 1 标注）：`docCount=4`（2 个 `viewer.html` + 2 个 `reader.html`），
-  `overlayCount=4`——同一标注在 4 个文档各渲染一次；其中 reader.html 上 `mathTextNodes=0`（无
-  标注源文本）却仍创建 overlay。后续可考虑：跳过无标注源文本的 doc 的 overlay 渲染，但需先确认
-  reader.html 的 `.page` 是可见 PDF 视图还是侧栏缩略图。
+- **真机确认**：即使只开一个 PDF，reader 内部也有隐藏的重复视图（实测 2× viewer.html +
+  2× reader.html，`overlayCount=4`），同一标注被渲染 4 次；reader.html 无标注源文本却建 overlay
+  （纯浪费）。
+- 改动：对每个 doc，若 `getElementsWithMathText(doc)` 为空（该 doc 无标注原文控件），只清理该
+  doc 上残留 overlay、跳过渲染。
+- **真机验证结果**（dev 诊断实测）：`overlayCount` 4→2；reader.html 的 `managerOverlays` 1→0
+  （残留框被清）；插入新公式场景同样为 2，插入时机正常（控件未生成的担忧未出现）。
+- **未达 1 的原因**：2 个 viewer.html 都含标注原文控件（mathTextNodes=1），都被判为有效文档。
+  若其中一个是隐藏副本，理论上可再砍到 1，但需先真机确认视图可见性（风险高，暂缓）。
+- 风险：低-中。插入新公式瞬间 Zotero 控件可能尚未生成，overlay 会晚一点出现（observer + 750ms
+  兜底自动补）；已真机验证插入时机正常。
+- 剩余（未做）：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合。标注数少
+  时收益有限，暂缓。
 
 ### ✅ 已做：`getElementsWithMathText` 去 TreeWalker（基于真机 DOM 结构）
 
@@ -89,4 +96,9 @@ renderMathAnnotations (mathTool.ts:773)
 
 - 性能是否变好：让用户打开一个**多页、多公式、文本稠密**的 PDF，观察滚动/缩放/选择文本时的卡顿；或对比优化前后 Zotero 调试日志里 `render diagnostics`（development 模式）的耗时。
 - 回归是否引入：改完先 `npm run build` + eslint/prettier，再让用户重装 xpi 真机验证插入、编辑、双击编辑、关标签页。
-- 真机 DOM 结构：`npm run start` 开发模式，Zotero 调试日志看 `logRenderDiagnostics` 输出。
+- 真机 DOM 结构（无需 `npm run start`）：`npx zotero-plugin build --dev` 构建 dev 版
+  （只产出 `addon/` 目录，不生成 xpi；需手动打包
+  `(cd .scaffold/build/addon && zip -qr ../zotero-latex-math-tool.xpi .)`），装进 Zotero 后：
+  **帮助 > 调试日志 > 启用日志 → 查看输出日志**，搜 `render diagnostics` 行复制 JSON。
+  注意：`npm run build`（production）会把 `__env__` 编译成 `production`，诊断代码被短路，
+  所以必须用 dev 构建才能抓 DOM；抓完用 `npm run build` 恢复 production。

@@ -1055,6 +1055,20 @@ export class LatexMathTool {
       this.injectStyles(doc);
       const activeIDs = new Set(annotations.map((annotation) => annotation.id));
 
+      // Only render overlays on documents that actually host the annotation
+      // source controls. Zotero instantiates hidden duplicate PDF views
+      // (primary/secondary), so a document can contain `.page` elements with
+      // no math text at all — rendering an overlay there is pure waste.
+      // Documents without a math source are cleaned, not rendered.
+      if (this.getElementsWithMathText(doc).length === 0) {
+        for (const element of [
+          ...doc.querySelectorAll<HTMLElement>(`.${MANAGER_RENDER_CLASS}`),
+        ]) {
+          element.remove();
+        }
+        continue;
+      }
+
       for (const annotation of annotations) {
         const position = this.getPDFPosition(annotation);
         const payload = this.parsePayload(

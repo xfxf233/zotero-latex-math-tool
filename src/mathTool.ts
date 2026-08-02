@@ -68,6 +68,9 @@ const MANAGER_RENDER_CLASS = "zotero-latex-math-manager-render";
 const PAGE_OVERLAY_CLASS = "zotero-latex-math-page-overlay";
 const RAW_HIDDEN_CLASS = "zotero-latex-math-raw-hidden";
 const FIT_CONTENT_CLASS = "zotero-latex-math-fit-content";
+// 选中公式后再按下：指针移动超过该像素数视为拖动（松手不弹编辑器），
+// 未拖动才视为"再点一下"（松手弹编辑器）。量级与浏览器点击判定一致。
+const CLICK_DRAG_THRESHOLD_PX = 5;
 
 export class LatexMathTool {
   private toolbarHandler?: _ZoteroTypes.Reader.EventHandler<"renderToolbar">;
@@ -1052,41 +1055,30 @@ export class LatexMathTool {
     runtime: ReaderRuntime,
     doc: Document,
   ): void {
-    const clickHandler = (event: Event) => {
-      const mouseEvent = event as MouseEvent;
-      const target = mouseEvent.target as Element | null;
-      if (
-        !target ||
-        target.closest(".zotero-latex-math-modal") ||
-        target.closest(".zotero-latex-math-editor-frame")
-      ) {
-        return;
-      }
+    // 选中状态下"再点一下"的编辑意图。pointerdown 时判定并只做标记，不拦截
+    // 不弹：按下先不动，允许原生拖动注释框。pointerup 时若指针移动超过阈值
+    // 视为拖动，撤销编辑意图（拖过松手不弹编辑器）；未拖动的松手才由
+    // clickHandler 打开 LaTeX 编辑器。
+    let pendingEdit = false;
+    let downX = 0;
+    let downY = 0;
 
-      const match = this.findMathAnnotationAtPoint(runtime, doc, mouseEvent);
-      if (!match) {
-        return;
-      }
-
-      this.selectAnnotation(runtime.reader, match.annotation.id);
+    const isBlockedTarget = (event: Event): boolean => {
+      const target = (event as MouseEvent).target as Element | null;
+      return Boolean(
+        target &&
+        !target.closest(".zotero-latex-math-modal") &&
+        !target.closest(".zotero-latex-math-editor-frame"),
+      );
     };
 
-    const handler = (event: Event) => {
-      const mouseEvent = event as MouseEvent;
-      const target = mouseEvent.target as Element | null;
-      if (
-        !target ||
-        target.closest(".zotero-latex-math-modal") ||
-        target.closest(".zotero-latex-math-editor-frame")
-      ) {
-        return;
-      }
-
-      const match = this.findMathAnnotationAtPoint(runtime, doc, mouseEvent);
-      if (!match) {
-        return;
-      }
-
+    const openEditor = (
+      event: Event,
+      match: {
+        annotation: _ZoteroTypes.Reader.Annotation;
+        payload: MathPayload;
+      },
+    ) => {
       event.preventDefault();
       event.stopPropagation();
       (
@@ -1107,11 +1099,97 @@ export class LatexMathTool {
       });
     };
 
+    // 捕获阶段先于原生处理，读到的选中状态是"本次点击之前"留下的，
+    // 从而区分第一次点击（仅选中）和"再点一下已选中公式"（待编辑）。
+    const pointerDownHandler = (event: Event) => {
+      pendingEdit = false;
+      if (!isBlockedTarget(event)) {
+        return;
+      }
+      const match = this.findMathAnnotationAtPoint(
+        runtime,
+        doc,
+        event as MouseEvent,
+      );
+      if (!match) {
+        return;
+      }
+      if (!this.isAnnotationSelected(runtime.reader, match.annotation.id)) {
+        return;
+      }
+      pendingEdit = true;
+      downX = (event as MouseEvent).clientX;
+      downY = (event as MouseEvent).clientY;
+    };
+
+    // 指针一旦移动超过阈值，视为拖动，撤销编辑意图。
+    const pointerUpHandler = (event: Event) => {
+      if (!pendingEdit) {
+        return;
+      }
+      const mouseEvent = event as MouseEvent;
+      const dx = mouseEvent.clientX - downX;
+      const dy = mouseEvent.clientY - downY;
+      if (
+        dx * dx + dy * dy >
+        CLICK_DRAG_THRESHOLD_PX * CLICK_DRAG_THRESHOLD_PX
+      ) {
+        pendingEdit = false;
+      }
+    };
+
+    const clickHandler = (event: Event) => {
+      if (!isBlockedTarget(event)) {
+        return;
+      }
+      const match = this.findMathAnnotationAtPoint(
+        runtime,
+        doc,
+        event as MouseEvent,
+      );
+      if (!match) {
+        return;
+      }
+      if (!pendingEdit) {
+        this.selectAnnotation(runtime.reader, match.annotation.id);
+        return;
+      }
+      // 无拖动的松手 → 打开 LaTeX 编辑器，并拦截本次点击，避免原生进入
+      // 隐藏原文的文本编辑态。
+      pendingEdit = false;
+      event.preventDefault();
+      event.stopPropagation();
+      (
+        event as Event & { stopImmediatePropagation?: () => void }
+      ).stopImmediatePropagation?.();
+      openEditor(event, match);
+    };
+
+    // 双击事件只做拦截，防止原生双击进入隐藏原文的文本编辑态；
+    // 弹编辑器已由上面的 click 处理，避免重复打开。
+    const dblClickHandler = (event: Event) => {
+      if (!isBlockedTarget(event)) {
+        return;
+      }
+      if (!this.findMathAnnotationAtPoint(runtime, doc, event as MouseEvent)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      (
+        event as Event & { stopImmediatePropagation?: () => void }
+      ).stopImmediatePropagation?.();
+    };
+
+    doc.addEventListener("pointerdown", pointerDownHandler, true);
+    doc.addEventListener("pointerup", pointerUpHandler, true);
     doc.addEventListener("click", clickHandler, true);
-    doc.addEventListener("dblclick", handler, true);
+    doc.addEventListener("dblclick", dblClickHandler, true);
     runtime.documentCleanups.push(() => {
+      doc.removeEventListener("pointerdown", pointerDownHandler, true);
+      doc.removeEventListener("pointerup", pointerUpHandler, true);
       doc.removeEventListener("click", clickHandler, true);
-      doc.removeEventListener("dblclick", handler, true);
+      doc.removeEventListener("dblclick", dblClickHandler, true);
     });
   }
 
@@ -1142,6 +1220,18 @@ export class LatexMathTool {
         }
       }
     }
+  }
+
+  private isAnnotationSelected(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    annotationID: string,
+  ): boolean {
+    const internalReader = reader._internalReader as any;
+    const ids = internalReader?._state?.selectedAnnotationIDs;
+    if (!Array.isArray(ids)) {
+      return false;
+    }
+    return ids.includes(annotationID);
   }
 
   private getEditorDocument(runtime: ReaderRuntime): Document {

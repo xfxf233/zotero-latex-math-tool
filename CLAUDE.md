@@ -37,9 +37,13 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
 5. 状态切换用"**基线 + 连续 N 次偏离**"判定（tool monitor 用基线 `_state.tool` + 连续 2 次偏离），
    避免 Zotero 内部短暂重同步导致误杀。
 6. **Zotero 自由文本标注的正文在 `comment` 字段，`text` 字段留空**。侧栏编辑只更新 `comment`；
-   插件创建/保存标注时只写 `comment`、不要写 `text`（否则 `text ?? comment` 读到旧 `text`，
-   导致改侧栏原文后公式不同步。真机已确认：新建时两字段都被插件写入，编辑后 `text` 旧 `comment` 新，
-   重开后 `text` 为空、内容全在 `comment`）。
+   插件所有数学内容读取一律走 `getMathContent`（只读 `comment`），**不要用 `text ?? comment`**：
+   `"" ?? comment` 遇空串返回空串，导致数学标注识别失败、渲染被短路（addAnnotation 建出的标注
+   text 是空串）。创建/保存标注时只写 `comment`、不要写 `text`。
+7. **Σ 新建走原生 `manager.addAnnotation`**（cbf9f79 起）：传最小入参（type/color/sortIndex/
+   pageLabel/position/comment），Zotero 自动生成 id/日期/作者/tags、自行持久化、且会把 text
+   填成空串。`position` 对 text 标注必需 `fontSize`/`rotation`（去掉直接报错）。`_save` 保留
+   以保证立即落库（addAnnotation 自持久的时机不可控）。
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 

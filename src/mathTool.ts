@@ -1716,6 +1716,8 @@ export class LatexMathTool {
         id: annotation.id,
         pageIndex: this.getPDFPosition(annotation)?.pageIndex,
         rect: this.getPDFPosition(annotation)?.rects?.[0],
+        text: (annotation.text ?? "").slice(0, 64),
+        comment: (annotation.comment ?? "").slice(0, 64),
         textPrefix: (annotation.text ?? annotation.comment ?? "").slice(0, 32),
       })),
       docs: docs.map((doc, index) => ({
@@ -1961,7 +1963,10 @@ export class LatexMathTool {
         rotation: 0,
         rects: [rect],
       },
-      text: payload.encoded,
+      // 自由文本标注的正文存在 `comment` 字段，`text` 必须留空：侧栏编辑时
+      // Zotero 只更新 `comment`，若这里写了 `text`，插件 `text ?? comment`
+      // 会一直读到旧的 `text`，导致改侧栏原文后公式不同步。
+      text: undefined,
       comment: payload.encoded,
       tags: [],
       dateCreated: new Date().toISOString(),
@@ -1987,7 +1992,7 @@ export class LatexMathTool {
       throw new Error("Reader annotation manager is not available");
     }
 
-    annotation.text = payload.encoded;
+    annotation.text = undefined;
     annotation.comment = payload.encoded;
     if (doc && payload.renderedSize) {
       this.resizeAnnotationRect(

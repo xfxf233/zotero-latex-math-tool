@@ -25,13 +25,6 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
 2. 本环境（沙箱）**没有 Zotero**，无法跑 `npm run test`（需 Zotero 二进制，本地 `.env` 未填）。
    集成测试无法在此运行；运行时行为一律靠用户真机验证。
 
-## 当前状态（截至 2026-08-02）
-
-- 最近提交 `a50a32c`（**未 push**，main 领先 origin/main 1）：清理冗余——合并重复的 toolbar 样式、
-  去掉 Σ 按钮选中态的 box-shadow 粗线、删 `is-inline` 空开关。已真机验证正常。
-- 此前所有性能优化与 bug 修复均已提交并真机验证，已同步到 origin/main。
-- 剩余可优化项见下，均非急迫。
-
 ## 经验教训（勿再踩）
 
 1. **Zotero 事件/DOM/state，真机验证前勿假设**。已确认的结构：工具栏与 PDF 页面在**同一文档**；
@@ -43,6 +36,10 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
    且只在确实有数学标注时才做事。
 5. 状态切换用"**基线 + 连续 N 次偏离**"判定（tool monitor 用基线 `_state.tool` + 连续 2 次偏离），
    避免 Zotero 内部短暂重同步导致误杀。
+6. **Zotero 自由文本标注的正文在 `comment` 字段，`text` 字段留空**。侧栏编辑只更新 `comment`；
+   插件创建/保存标注时只写 `comment`、不要写 `text`（否则 `text ?? comment` 读到旧 `text`，
+   导致改侧栏原文后公式不同步。真机已确认：新建时两字段都被插件写入，编辑后 `text` 旧 `comment` 新，
+   重开后 `text` 为空、内容全在 `comment`）。
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 

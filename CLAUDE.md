@@ -1,113 +1,56 @@
 # Zotero Latex Math Tool — 工作交接笔记
 
-本文件是跨会话恢复工作状态的依据。被自动加载，无需手动读取。
+本文件是跨会话恢复工作状态的依据，被自动加载。
 
 ## 项目是什么
 
-Zotero 9 插件：在 PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插入 LaTeX 公式。
+Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插入 LaTeX 公式。
 公式以自由文本标注存储（协议：`[[math:display]] <latex>` / `[[math:inline]] <latex>`），
 用 KaTeX 渲染成覆盖层（overlay），并隐藏页面上的原始 LaTeX 文本。双击渲染后的公式可编辑。
-
-核心逻辑全在 `src/mathTool.ts`（`LatexMathTool` 类，约 2260 行）。
+核心逻辑全在 `src/mathTool.ts`（`LatexMathTool` 类，约 2600 行）。
 其他：`src/katexFonts.ts`（20 个 KaTeX 字体 data URL 内联）、`src/index.ts`/`addon.ts`/`hooks.ts`（模板生命周期）、`src/utils/*`。
 
 ## 沟通约定（用户偏好）
 
 - **始终用中文回复。**
-- 用户用 AI 开发，**不读代码**。给结论、风险和可操作建议，不要大段代码/文件 dump。
+- 用户用 AI 开发、**不读代码**。给结论、风险和可操作建议，不要大段代码/文件 dump。
 - 用户只想要一个简单小功能，**非常在意不要拖慢 Zotero**。一切改动以性能为最高优先级，但绝不牺牲已确认正常的功能。
 
 ## ⚠️ 红线（来自真实回归事故，勿再犯）
 
-1. **不得在无真机验证下改动渲染/隐藏链路**：
-   `renderMathAnnotations`、`renderManagerOverlays`、`hideRawMathElements`、`getElementsWithMathText`
-   这四个方法必须与提交 df1bcac 保持一致，除非用户先在真机确认。
-   - 事故：曾假设 DOM 上 `data-annotation-id` == 标注对象 `id`，据此在 `hideRawMathElements` 里做
-     按标注匹配 → 实际属性不匹配，导致"渲染公式 + 原始 `[[math:display]]` 文本同时显示"的回归。
-     结论：**真机确认 DOM 结构前，不要做任何按标注 ID 的隐藏判定**。
-   - 也曾把 `getElementsWithMathText` 扫描根缩窄到 `.annotationLayer` 等 → 同样回归。已还原。
+1. **渲染/隐藏链路四方法不得在无真机验证下改动**：
+   `renderMathAnnotations`、`renderManagerOverlays`、`hideRawMathElements`、`getElementsWithMathText`。
+   这四方法自提交 df1bcac 起未改动。曾因假设 DOM 结构（如 `data-annotation-id` == 标注 id、缩窄扫描根）
+   导致"渲染公式 + 原始 `[[math:…]]` 文本同时显示"的回归。**真机确认 DOM 结构前，不做任何此类假设。**
 2. 本环境（沙箱）**没有 Zotero**，无法跑 `npm run test`（需 Zotero 二进制，本地 `.env` 未填）。
    集成测试无法在此运行；运行时行为一律靠用户真机验证。
 
-## 已完成工作（最近提交 7a0e286；df1bcac ~ 7a0e286 共 5 提交，未 push，main 领先 origin/main 5 提交）
+## 当前状态（截至 2026-08-02）
 
-- P0 内存泄漏：`patchReaderUninit` 包装 `reader.uninit()`，关 PDF 标签页时释放 runtime；
-  `disposeRuntime` 幂等、对已销毁窗口安全（Zotero 的 `ReaderTab.close()`/`Reader.notify` 都走 `uninit()`）。
-- P0 性能：`logRenderDiagnostics` 按 `__env__ === "development"` 门控，生产不再每次渲染全量扫 DOM。
-- P0 可靠性：`getMathAnnotations` 改为纯函数；`pageLabel` 回填移到 `ensureAnnotationMetadata`，
-  只在 ensureReader/updateAnnotations/setAnnotations 触发，不再在渲染路径写 DB。
-- P1：`appendToolbarButton` 幂等（防重复 Σ 按钮）。
-- 死代码清理：`element.ondblclick`（overlay 有 `pointer-events:none`，永不触发）、模板遗留 `MyToolkit` 类。
-- ESLint：重新启用 `@typescript-eslint/no-unused-vars`。
-- CI：`ci.yml` 删除 test job（scaffold 会自动下载 Zotero beta 无头跑，无意义且可能因版本不匹配变红）。
-  现只保留 lint + build。
+- 最近提交 `a50a32c`（**未 push**，main 领先 origin/main 1）：清理冗余——合并重复的 toolbar 样式、
+  去掉 Σ 按钮选中态的 box-shadow 粗线、删 `is-inline` 空开关。已真机验证正常。
+- 此前所有性能优化与 bug 修复均已提交并真机验证，已同步到 origin/main。
+- 剩余可优化项见下，均非急迫。
 
-### 性能优化（本会话 4 项，均真机验证通过，已提交）
+## 经验教训（勿再踩）
 
-- `renderIfNeeded` 短路：无标注且无残留 overlay 时跳过全量渲染（a810086）。
-- `scheduleRender` repeat 3 次→1 次（250/750/1500 → 单次 750ms）（a810086）。
-- `getElementsWithMathText` 去 TreeWalker：真机确认标注原文在
-  `<textarea class="textAnnotation" data-id="<标注ID>">` 控件 value 里（标注 ID 在 `data-id`，
-  `data-annotation-id` 为空），只扫 textarea/input、不再全文档扫描（a810086）。
-- `renderManagerOverlays` 跳过无标注源文档：只渲染含标注原文控件的文档，隐藏重复视图不再白建
-  overlay；dev 实测 `overlayCount` 4→2（7a0e286）。
+1. **Zotero 事件/DOM/state，真机验证前勿假设**。已确认的结构：工具栏与 PDF 页面在**同一文档**；
+   Zotero 工具在 pointerdown/mousedown 就切换并抑制 click；`internalReader._state.tool` 才是工具状态真相源。
+2. 防抖在连续事件流里会被反复重置。需要时按**信号类型**提速（本会话用 `pdfViewer.currentScale` 变化识别
+   缩放 → rAF 一帧一次渲染）；不要全局缩短防抖。
+3. **MutationObserver 回调在 paint 前执行**，可同步重隐藏新插入的原文节点，消除渲染闪烁。
+4. 性能热路径的每次新增判断都要 **O(1) 短路**（如 `readerHasMath` 以 `_annotations.length` 作失效键），
+   且只在确实有数学标注时才做事。
+5. 状态切换用"**基线 + 连续 N 次偏离**"判定（tool monitor 用基线 `_state.tool` + 连续 2 次偏离），
+   避免 Zotero 内部短暂重同步导致误杀。
 
-### 本会话 bug 修复（已提交，均已真机验证通过）
+## 剩余可优化（详见 dev-notes/performance-optimization.md）
 
-均未改动红线四方法。原始文本缩放闪现、公式缩放位移、Σ 二次点击、双高亮、工具切换
-均已真机确认修复。
+- **P2**：KaTeX 字体 data URL 内联（bundle 约 1.1MB），改构建配置按需子集化。
+- **P3**：MutationObserver 触发面过大（characterData+attributes），风险高、放最后。
+- **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
 
-1. **连续缩放原始文本闪现**（已确认修复）：MutationObserver 回调里同步（paint 前）扫描新增节点、
-   立即重新加隐藏类（`hideNewRawMathText`）；`readerHasMath` 缓存 O(1) 短路。
-2. **缩放时公式位移/闪现**（真机反馈，新修复）：缩放时 pdf.js 重排页面，覆盖层像素坐标变旧，50ms
-   防抖被连续重置、缩放结束才纠正。修复：观察器里检测 `pdfViewer.currentScale` 变化（只发生在缩放，
-   不影响文本选择），用 rAF 节流一帧一次 `renderIfNeeded` 让公式逐帧跟随（`scheduleOverlaySync`）。
-3. **切其他原生工具未取消数学模式**（已确认修复）：工具栏监听改为 pointerdown/mousedown/click 三者；
-   新增 tool monitor（每 200ms 检查 `_state.tool` 偏离基线即取消，**连续 2 次偏离才取消**防误杀，
-   保留用户选中的工具）；PDF 点击处理器兜底。`cancelMathInsertMode` 新增 `preserveNativeTool`。
-4. **点 Σ 再点 Σ 取消却打开 latex**（真机反馈，新修复）：根因是工具栏与页面在同一文档，数学模式
-   激活时装的 PDF 点击处理器会命中 Σ 按钮点击，`getClickLocationFromDocument` 的
-   `doc.querySelector(".page")` 兜底把它回退成"第一个 page"。修复：去掉该兜底，非 `.page` 上的点击
-   不再打开编辑器。
-5. **点其他工具再点 Σ 双高亮**（真机反馈，新修复）：`setNativeTool` 若 `internalReader.setTool` 存在
-   会提前 return、不直接写 `_state.tool`，导致原生工具停留在原高亮。修复：始终先直接写
-   `_state.tool`，再调 setTool/view.setTool 让 Zotero 自家管道有机会传播。
-   另：Σ 按钮点击改用 `activatingReaders` 守卫而非 disabled，避免激活期间禁用窗口吞掉快速二次点击。
-   ⚠️ 基线机制：monitor 首个 tick 捕获 `_state.tool` 作为基线（不硬编码 pointer，防 setTool 未同步
-   state 导致误杀），PDF 点击兜底只在基线已捕获后生效。
-
-## 经验教训（本会话沉淀，勿再踩）
-
-1. **Zotero 事件/DOM 结构，真机验证前勿假设**。本会话真机反馈揭示的实际结构：
-   - 工具栏与 PDF 页面在**同一文档**（`event.doc` 里同时有 `.page`），PDF 点击处理器会命中工具栏
-     点击 → 非 `.page` 上的点击必须 return，不能回退到"第一个 page"。
-   - Zotero 工具栏可能在 `pointerdown`/`mousedown` 就切换工具并抑制 `click`，只监听 click 会漏。
-   - `internalReader.setTool` 存在但**可能不同步 `_state.tool`**；`_state.tool` 才是工具状态真相来源。
-   - 结论：涉及事件/DOM/state 的判定，先让用户真机验证，别按"应该怎样"写。
-2. **防抖在连续事件流里会被反复重置**（缩放/滚动），渲染延迟到事件流结束才发生。需要时按**信号类型**
-   针对性提速：本会话用 `pdfViewer.currentScale` 变化识别缩放 → rAF 一帧一次渲染；不要全局缩短防抖
-   （会伤文本选择等其它场景）。
-3. **MutationObserver 回调在 paint 前执行**，可用来消除渲染闪烁（同步重隐藏新插入的原文节点）。
-4. **性能敏感热路径守则**：observer 回调、渲染路径的每次新增判断都要 O(1) 短路（如 `readerHasMath`
-   以 `_annotations.length` 作失效键），且只在确实有数学标注时才做事。
-5. **用"基线 + 连续 N 次偏离"而非硬编码**判定状态切换（tool monitor 用基线 `_state.tool` + 连续 2 次
-   偏离），避免 Zotero 内部短暂重同步导致误杀。
-
-## 性能优化路线图
-
-详细分析见 `docs/performance-optimization.md`（含真机 DOM 结构、量化验证结果、dev 抓 DOM 方法）。
-
-**已完成**（均真机验证通过）：见上文"性能优化"项。
-**剩余按优先级**：
-
-1. （可选）`renderManagerOverlays` 进一步 2→1：真机显示同一 PDF 有 2 个 viewer.html 都含标注源，
-   若其中一个是隐藏副本可再砍到 1；但需先真机确认视图可见性，风险高、暂缓。
-2. P2：KaTeX 字体 data URL 内联（bundle 约 1MB），改构建配置按需子集化。
-3. P3：MutationObserver 触发面过大（characterData+attributes），风险高、放最后。
-4. 暂缓：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
-
-**优化原则**：优先"增量/按需/复用"而非全量重扫；每次改动必须能解释清楚为什么不变慢；
-跑不动的部分先列出，不要盲改。
+**优化原则**：优先"增量/按需/复用"而非全量重扫；每次改动必须能解释清楚为什么不变慢；跑不动的部分先列出，不要盲改。
 
 ## 验证流程
 

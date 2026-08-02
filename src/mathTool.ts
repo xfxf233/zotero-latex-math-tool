@@ -646,12 +646,21 @@ export class LatexMathTool {
     };
   }
 
+  /**
+   * 自由文本标注的正文在 `comment` 字段，`text` 恒为空。只读 comment 可避免
+   * `text ?? comment` 遇空串不落地的坑（`"" ?? comment` 返回空串，导致数学
+   * 标注识别失败、渲染被短路）。所有数学内容读取一律走这里。
+   */
+  private getMathContent(annotation: _ZoteroTypes.Reader.Annotation): string {
+    return annotation.comment ?? "";
+  }
+
   private hasMathAnnotation(
     annotations: _ZoteroTypes.Reader.Annotation[] | undefined,
   ): boolean {
     return Boolean(
       annotations?.some((annotation) =>
-        this.parsePayload(annotation.text ?? annotation.comment ?? ""),
+        this.parsePayload(this.getMathContent(annotation)),
       ),
     );
   }
@@ -664,7 +673,7 @@ export class LatexMathTool {
       !annotation ||
       annotation.type !== "text" ||
       !this.nativeTextInsertReaders.has(reader) ||
-      this.parsePayload(annotation.text ?? "")
+      this.parsePayload(this.getMathContent(annotation))
     ) {
       return false;
     }
@@ -1278,9 +1287,7 @@ export class LatexMathTool {
 
     for (const annotation of this.getMathAnnotations(runtime.reader)) {
       const position = this.getPDFPosition(annotation);
-      const payload = this.parsePayload(
-        annotation.text ?? annotation.comment ?? "",
-      );
+      const payload = this.parsePayload(this.getMathContent(annotation));
       const rect = position?.rects?.[0];
       if (!position || !payload || !rect || position.pageIndex !== pageIndex) {
         continue;
@@ -1391,9 +1398,7 @@ export class LatexMathTool {
 
       for (const annotation of annotations) {
         const position = this.getPDFPosition(annotation);
-        const payload = this.parsePayload(
-          annotation.text ?? annotation.comment ?? "",
-        );
+        const payload = this.parsePayload(this.getMathContent(annotation));
         const rect = position?.rects?.[0];
         if (!payload || !position || !rect) {
           continue;
@@ -1446,7 +1451,7 @@ export class LatexMathTool {
     return (manager?._annotations ?? []).filter(
       (annotation) =>
         annotation.type === "text" &&
-        Boolean(this.parsePayload(annotation.text ?? annotation.comment ?? "")),
+        Boolean(this.parsePayload(this.getMathContent(annotation))),
     );
   }
 
@@ -1718,7 +1723,7 @@ export class LatexMathTool {
         rect: this.getPDFPosition(annotation)?.rects?.[0],
         text: (annotation.text ?? "").slice(0, 64),
         comment: (annotation.comment ?? "").slice(0, 64),
-        textPrefix: (annotation.text ?? annotation.comment ?? "").slice(0, 32),
+        textPrefix: this.getMathContent(annotation).slice(0, 32),
       })),
       docs: docs.map((doc, index) => ({
         index,
@@ -1982,19 +1987,6 @@ export class LatexMathTool {
       throw new Error(
         "addAnnotation returned null — Zotero did not create the text annotation",
       );
-    }
-
-    // Zotero 的 addAnnotation 会把 `text` 填成空字符串，而插件所有读取约定
-    // `text ?? comment` 遇空串不会落到 comment（?? 只对 null/undefined 生效），
-    // 会导致 getMathAnnotations 识别为 0、渲染被短路（加载的标注 text 为
-    // undefined，所以打开已有公式的 PDF 正常）。创建后统一清成 undefined，
-    // 对返回对象与 _annotations 中同 id 的对象都处理（addAnnotation 可能
-    // 返回与入数组不同的对象）。
-    (created as _ZoteroTypes.Reader.Annotation).text = undefined;
-    for (const candidate of manager._annotations) {
-      if (candidate.id === created.id && candidate !== created) {
-        candidate.text = undefined;
-      }
     }
 
     this.logCreateDiagnostics(reader, manager, {

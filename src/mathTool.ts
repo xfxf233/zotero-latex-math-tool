@@ -1482,7 +1482,6 @@ export class LatexMathTool {
       "is-display",
       payload.mode === "display",
     );
-    this.toggleClassIfChanged(element, "is-inline", payload.mode === "inline");
     this.setDatasetIfChanged(element, "mathMode", payload.mode);
     this.setDatasetIfChanged(element, "mathSource", payload.latex);
 
@@ -2372,7 +2371,6 @@ export class LatexMathTool {
       .zotero-latex-math-toolbar-button.active,
       .zotero-latex-math-toolbar-button[aria-pressed="true"] {
         background: color-mix(in srgb, currentColor 18%, transparent) !important;
-        box-shadow: inset 0 -2px 0 currentColor;
       }
     `;
     doc.documentElement?.appendChild(style);

@@ -1946,39 +1946,139 @@ export class LatexMathTool {
     payload: MathPayload,
     doc?: Document,
   ): Promise<void> {
-    const fontSize = 14;
+    if (!manager.addAnnotation) {
+      throw new Error("Reader annotation manager is not available");
+    }
+
     const rect =
       doc && payload.renderedSize
         ? this.resizeLocationRect(doc, location, payload.renderedSize, reader)
         : location.rect;
+
+    // 只传最小入参：id/tags/日期/作者 由 Zotero 的 addAnnotation 生成补全，
+    // 插件不再手工拼 Zotero 的内部对象格式。正文必须放 comment、text 留空
+    // （侧栏编辑只更新 comment，写 text 会读到旧值导致公式不同步）。
     const rawAnnotation = {
-      id: manager._generateObjectKey?.() ?? Zotero.Utilities.randomString(8),
       type: "text",
       color: "#000000",
       pageLabel: this.getPageLabel(reader, location.pageIndex, doc),
       sortIndex: this.createSortIndex(location),
       position: {
         pageIndex: location.pageIndex,
-        fontSize,
+        // fontSize/rotation 不在 PDFPosition 类型内，但 Zotero 的 addAnnotation
+        // 对 text 标注必需（真机验证：去掉会直接报错）。沿用旧路径的值。
+        fontSize: 14,
         rotation: 0,
         rects: [rect],
       },
-      // 自由文本标注的正文存在 `comment` 字段，`text` 必须留空：侧栏编辑时
-      // Zotero 只更新 `comment`，若这里写了 `text`，插件 `text ?? comment`
-      // 会一直读到旧的 `text`，导致改侧栏原文后公式不同步。
-      text: undefined,
       comment: payload.encoded,
-      tags: [],
-      dateCreated: new Date().toISOString(),
-      dateModified: new Date().toISOString(),
-      authorName: manager._authorName,
-    } as _ZoteroTypes.Reader.Annotation;
-    const annotation = this.cloneIntoManagerRealm(manager, rawAnnotation);
+    } as Parameters<typeof manager.addAnnotation>[0];
 
-    manager.updateAnnotations?.(
-      this.replaceManagedAnnotation(manager, annotation),
-    );
-    manager._save?.(annotation, true);
+    const beforeLength = manager._annotations.length;
+    const annotation = this.cloneIntoManagerRealm(manager, rawAnnotation);
+    const created = manager.addAnnotation(annotation);
+
+    if (!created) {
+      throw new Error(
+        "addAnnotation returned null — Zotero did not create the text annotation",
+      );
+    }
+
+    // Zotero 的 addAnnotation 会把 `text` 填成空字符串，而插件所有读取约定
+    // `text ?? comment` 遇空串不会落到 comment（?? 只对 null/undefined 生效），
+    // 会导致 getMathAnnotations 识别为 0、渲染被短路（加载的标注 text 为
+    // undefined，所以打开已有公式的 PDF 正常）。创建后统一清成 undefined，
+    // 对返回对象与 _annotations 中同 id 的对象都处理（addAnnotation 可能
+    // 返回与入数组不同的对象）。
+    (created as _ZoteroTypes.Reader.Annotation).text = undefined;
+    for (const candidate of manager._annotations) {
+      if (candidate.id === created.id && candidate !== created) {
+        candidate.text = undefined;
+      }
+    }
+
+    this.logCreateDiagnostics(reader, manager, {
+      annotation,
+      created,
+      beforeLength,
+      phase: "pre-save",
+    });
+    manager._save?.(created, true);
+    this.logCreateDiagnostics(reader, manager, {
+      annotation,
+      created,
+      beforeLength,
+      phase: "post-save",
+    });
+  }
+
+  /**
+   * Dev-only diagnostics for the native `addAnnotation` creation path.
+   * Verifies Zotero generated the id/defaults, that the annotation is in
+   * `_annotations`, and whether `_save` is required for persistence.
+   */
+  private logCreateDiagnostics(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    manager: AnnotationManager,
+    info: {
+      // 传入 addAnnotation 的克隆对象（partial 类型，仅用于身份比较）
+      annotation: unknown;
+      created: _ZoteroTypes.Reader.Annotation;
+      beforeLength: number;
+      phase: "pre-save" | "post-save";
+    },
+  ): void {
+    if (__env__ !== "development") {
+      return;
+    }
+    // 诊断绝不能影响创建流程：任何字段访问异常都吞掉，不抛回创建路径。
+    try {
+      const { annotation, created, beforeLength, phase } = info;
+      // _unsavedAnnotations 运行时可能不是数组（真机报 .some is not a
+      // function，可能为 Set），按数组/Set 分别处理，拿不到就留空。
+      const unsaved: unknown = manager._unsavedAnnotations;
+      let unsavedQueued: boolean | undefined;
+      if (Array.isArray(unsaved)) {
+        unsavedQueued = unsaved.some(
+          (candidate) => candidate.id === created.id,
+        );
+      } else if (
+        unsaved &&
+        typeof (unsaved as { has?: unknown }).has === "function"
+      ) {
+        unsavedQueued = Boolean((unsaved as Set<unknown>).has(created));
+      }
+      const summary = {
+        phase,
+        returnedId: created.id,
+        sameObject: created === annotation,
+        type: created.type,
+        color: created.color,
+        sortIndex: created.sortIndex,
+        pageLabel: created.pageLabel,
+        text: (created.text ?? "").slice(0, 64),
+        comment: (created.comment ?? "").slice(0, 80),
+        position: this.getPDFPosition(created),
+        dateCreated: created.dateCreated,
+        dateModified: created.dateModified,
+        authorName: created.authorName,
+        isAuthorNameAuthoritative: created.isAuthorNameAuthoritative,
+        tags: created.tags,
+        annotationsBefore: beforeLength,
+        annotationsAfter: manager._annotations.length,
+        inAnnotations: manager._annotations.some(
+          (candidate) => candidate.id === created.id,
+        ),
+        runtimeExists: this.runtimes.has(reader),
+        mathAnnotationsCount: this.getMathAnnotations(reader).length,
+        unsavedQueued,
+      };
+      Zotero.debug(
+        `[LaTeX Math Tool] addAnnotation ${JSON.stringify(summary)}`,
+      );
+    } catch (error) {
+      this.logError("Unable to log addAnnotation diagnostics", error);
+    }
   }
 
   private async updateManagerAnnotation(

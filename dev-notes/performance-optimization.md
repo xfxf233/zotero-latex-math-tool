@@ -41,10 +41,13 @@ renderMathAnnotations
 
 ## 三、剩余可优化项（按优先级）
 
-1. **P2：KaTeX 字体 data URL 内联**：20 个 woff2（约 400KB base64）内联进 bundle
-   （`mathtool.js` 约 1.1MB），并注入每个被观察文档 + 每次打开的编辑器 iframe。
-   改进方向：按需子集化 / 仅注入一次并复用 / 改用 chrome:// 资源引用。
-   改构建配置 `zotero-plugin.config.ts` 的 `loader: { ".woff2": "dataurl" }`。风险中。
+1. **P2（已判不可行，勿再试）：KaTeX 字体 data URL 内联**：20 个 woff2（约 400KB base64）内联进
+   bundle（`mathtool.js` 约 1.1MB），并注入每个被观察文档 + 每次打开的编辑器 iframe。
+   **2026-08 真机验证**：曾实现"独立 woff2 文件 + CSS `chrome://mathtool/content/fonts/` 引用"
+   （bundle 减至 751KB、字体进 xpi），但 PDF 页面**加载不了 chrome:// 字体**，公式全部变系统默认
+   字体。已回退 data URL 方案。data URL 是唯一验证可行的字体携带方式，不再尝试外部字体 URL。
+   用户明确要求 **20 个字体全部保留、不可子集化**（文献常见 `\mathfrak`/`\mathcal` 等），
+   P2 永久关闭，不再做任何减小字体体积的尝试。
 2. **P3：MutationObserver 触发面过大**：`characterData` + `attributes` 使文本选择、tooltip 等都触发渲染。
    改进方向：收紧 `attributeFilter`、跳过纯 class 变更；或对"非标注层变更"只做防抖不做全量。
    风险高（怕漏掉真实需要重渲染的变更），放最后。

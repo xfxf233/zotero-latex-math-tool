@@ -54,10 +54,17 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
    `isFreeTextToolLabel` 正则，走 label 匹配路径、不依赖 fallback。`manager.setAnnotations`
    打开/编辑时从不被调用（补丁是无害死代码，保留）；`manager.updateAnnotations` 在编辑时确实
    触发（一次编辑计数 +1）。标注 `position.rects` 恒为单矩形。
+10. **真机确认（2026-08）**：KaTeX 字体**只能 data URL 内联**。试过把字体改独立 woff2 文件、
+    CSS 用 `chrome://mathtool/content/fonts/` 引用（与 favicon 同机制），真机验证**公式变系统
+    默认字体**——PDF 页面加载不了 chrome:// 字体资源。data URL 是唯一验证可行的方式，勿再试
+    外部字体 URL（Zotero 内置 KaTeX 字体同样不可跨文档引用）。
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 
-- **P2**：KaTeX 字体 data URL 内联（bundle 约 1.1MB），改构建配置按需子集化。
+- **P2（已判不可行，永久关闭）**：KaTeX 字体 data URL 内联（bundle 约 1.1MB）。曾试改独立字体文件 +
+  chrome:// 引用（bundle 可减 347KB），真机验证 PDF 页面加载失败、公式变系统字体，已回退。
+  **用户明确要求：20 个 KaTeX 字体（含 `\mathfrak`/`\mathcal` 等特殊字体）全部保留、不可子集化**
+  （用户文献常见这些字体，嫌字母不够用）。任何减小字体体积的方向（子集化/chrome:// 复用）都不做。
 - **P3**：MutationObserver 触发面过大（characterData+attributes），风险高、放最后。
 - **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
 

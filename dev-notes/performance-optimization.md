@@ -3,7 +3,9 @@
 > 目标：这个插件只做一件小事，不应拖慢 Zotero 本体。
 > 本文记录渲染热路径的现状、已完成的优化（简述）与剩余可优化项。
 > 渲染链路四方法（`renderMathAnnotations`/`renderManagerOverlays`/`hideRawMathElements`/
-> `getElementsWithMathText`）自提交 df1bcac 起未改动，只优化了调度层。
+> `getElementsWithMathText`）自提交 df1bcac 起 DOM 结构假设未变；2026-08 在
+> `renderManagerOverlays`/`hideRawMathElements` 之间复用了同一份控件扫描结果
+> （见"已完成"末条，真机回归通过）。
 
 ## 一、渲染热路径（现状）
 
@@ -14,10 +16,11 @@
 renderMathAnnotations
 ├── refreshObservedDocuments      // 增量，便宜
 ├── getPDFPageDocuments           // querySelector，便宜
+├── 预扫描每 doc 数学控件          // 一次 getElementsWithMathText，结果复用（见已完成末条）
 ├── renderManagerOverlays         // O(标注数 × 文档数)，主开销
 │   └── 每标注: 坐标换算 + 建/复 overlay + fitFormulaToOverlay（内容尺寸已缓存，
 │       稳态渲染无 getBoundingClientRect 强制布局）
-├── hideRawMathElements           // 扫 textarea/input 控件
+├── hideRawMathElements           // 用预扫描集合隐藏/清理，不再自行全量扫描
 └── logRenderDiagnostics          // 已门控，development 才跑
 ```
 
@@ -44,6 +47,11 @@ renderMathAnnotations
   保留。纯 class 变更（文本选择/tooltip/hover）不再触发 observer；写 `RAW_HIDDEN_CLASS`
   不再自我触发一次防抖全量渲染（旧行为：缩放时每隐藏一个 textarea 都多排一次全量渲染）。
   `style` 保留保证缩放/拖动照常重定位 overlay。真机验证缩放/翻页/插入/编辑/文本选择无回归。
+- **渲染路径控件单次扫描**（2026-08，真机回归通过）：`renderMathAnnotations` 为每个 page
+  文档预扫描一次 `getElementsWithMathText`，结果以 `Map<Document, HTMLElement[]>` 同时供
+  `renderManagerOverlays`（判断有无数学源）与 `hideRawMathElements`（算 active 集合）使用，
+  消除每轮渲染对同一文档 textarea/input 的全量扫描两遍。行为严格等价（两步之间 overlay
+  增删不影响控件 value）。真机验证插入/编辑/翻页/缩放/侧栏改普通文本均正常。
 
 ## 三、剩余可优化项（按优先级）
 

@@ -1241,13 +1241,26 @@ export class LatexMathTool {
   private renderMathAnnotations(runtime: ReaderRuntime): void {
     this.refreshObservedDocuments(runtime);
     const docs = this.getPDFPageDocuments(runtime);
-    const overlayCount = this.renderManagerOverlays(runtime, docs);
+    // 每 doc 只做一次控件扫描，结果同时供 overlay 渲染与原文隐藏/清理使用，
+    // 避免每轮渲染对同一文档的 textarea/input 全量扫描两遍（renderManagerOverlays
+    // 判断有无数学源一遍 + hideRawMathElements 算 active 集合再一遍）。
+    // 该结果在两步之间稳定：renderManagerOverlays 只增删我们自己的 overlay 元素，
+    // 不会改变 textarea/input 控件的 value。
+    const docMathElements = new Map<Document, HTMLElement[]>();
+    for (const doc of docs) {
+      docMathElements.set(doc, this.getElementsWithMathText(doc));
+    }
+    const overlayCount = this.renderManagerOverlays(
+      runtime,
+      docs,
+      docMathElements,
+    );
     // overlayCount > 0 走原有隐藏逻辑；无 overlay 但该 reader 被标记为有残留
     // 隐藏（数学标注被改成普通文本）时同样执行清理，否则普通文本会被残留的
     // 透明色遮住。正常路径（有 overlay）不增加任何查询。
     if (overlayCount > 0 || this.staleRawHiddenReaders.has(runtime.reader)) {
       for (const doc of docs) {
-        this.hideRawMathElements(doc);
+        this.hideRawMathElements(doc, docMathElements.get(doc) ?? []);
       }
     }
     this.staleRawHiddenReaders.delete(runtime.reader);
@@ -1535,8 +1548,14 @@ export class LatexMathTool {
     return [...elements];
   }
 
-  private hideRawMathElements(doc: Document): void {
-    const activeElements = new Set(this.getElementsWithMathText(doc));
+  private hideRawMathElements(
+    doc: Document,
+    mathElements: HTMLElement[],
+  ): void {
+    // mathElements 是 renderMathAnnotations 为本 doc 预扫描的数学控件集合，
+    // 与 hideRawMathElements 自行扫描 getElementsWithMathText(doc) 的结果一致
+    // （两次调用之间没有会影响控件 value 的 DOM 变更），行为完全等价。
+    const activeElements = new Set(mathElements);
 
     for (const element of [
       ...doc.querySelectorAll<HTMLElement>(`.${RAW_HIDDEN_CLASS}`),
@@ -1579,6 +1598,7 @@ export class LatexMathTool {
   private renderManagerOverlays(
     runtime: ReaderRuntime,
     docs: Document[],
+    docMathElements: Map<Document, HTMLElement[]>,
   ): number {
     const annotations = this.getMathAnnotations(runtime.reader);
     let rendered = 0;
@@ -1592,7 +1612,8 @@ export class LatexMathTool {
       // (primary/secondary), so a document can contain `.page` elements with
       // no math text at all — rendering an overlay there is pure waste.
       // Documents without a math source are cleaned, not rendered.
-      if (this.getElementsWithMathText(doc).length === 0) {
+      // mathElements 由 renderMathAnnotations 统一扫描后传入，避免重复全量扫描。
+      if ((docMathElements.get(doc) ?? []).length === 0) {
         for (const element of [
           ...doc.querySelectorAll<HTMLElement>(`.${MANAGER_RENDER_CLASS}`),
         ]) {

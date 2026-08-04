@@ -98,9 +98,19 @@ export class LatexMathTool {
     _ZoteroTypes.ReaderInstance,
     boolean
   >();
+  // 侧栏编辑把数学标注改成普通文本后，残留的 RAW_HIDDEN_CLASS 会把文本染成
+  // 透明不可见。该集合标记"此 reader 有需要清理的残留隐藏"，仅在编辑路径
+  // 检测到残留时加入、渲染清理后移除，使 renderIfNeeded 热路径的检查保持 O(1)。
+  private staleRawHiddenReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private mathAnnotationCacheCounts = new WeakMap<
     _ZoteroTypes.ReaderInstance,
     number
+  >();
+  // in-flight 的 ensureReader 初始化 Promise，防止并发调用对同一 reader
+  // 重复建 runtime（见 ensureReader 内注释）。
+  private ensureReaderPromises = new Map<
+    _ZoteroTypes.ReaderInstance<"pdf">,
+    Promise<ReaderRuntime>
   >();
   private mathModeBaselineTools = new WeakMap<
     _ZoteroTypes.ReaderInstance,
@@ -167,12 +177,19 @@ export class LatexMathTool {
 
   public disposeWindow(win: Window): void {
     for (const runtime of [...this.runtimeSet]) {
-      const readerWindow = runtime.reader._window;
-      if (
-        win === readerWindow ||
-        win === runtime.win ||
-        win === runtime.win.top
-      ) {
+      // reader 关闭过程中 runtime.win 可能是已销毁的死 wrapper，访问其属性会
+      // 抛 NS_ERROR、中断整个清理循环，导致其余 runtime 的监听器残留。任何
+      // 死 wrapper 访问都短路跳过该 runtime（其自身清理由 disposeRuntime 兜底）。
+      let matches = false;
+      try {
+        matches =
+          win === runtime.reader._window ||
+          win === runtime.win ||
+          win === runtime.win.top;
+      } catch {
+        matches = false;
+      }
+      if (matches) {
         this.disposeRuntime(runtime);
       }
     }
@@ -190,6 +207,24 @@ export class LatexMathTool {
       return existing;
     }
 
+    // 并发去重：startup 遍历已打开的 reader 与 renderToolbar 事件可能同时触发
+    // 同一 reader 的初始化。若各自完整建流程，会建出两个 runtime（后写覆盖
+    // 先写），先建 runtime 的 MutationObserver / resize 监听成为孤儿、回调成
+    // 双份。共享同一个 in-flight Promise，并发调用等待同一结果。
+    const inFlight = this.ensureReaderPromises.get(reader);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = this.initializeReaderRuntime(reader).finally(() => {
+      this.ensureReaderPromises.delete(reader);
+    });
+    this.ensureReaderPromises.set(reader, promise);
+    return promise;
+  }
+
+  private async initializeReaderRuntime(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): Promise<ReaderRuntime> {
     await reader._waitForReader?.();
     const primaryView = reader._internalReader?._primaryView;
     await primaryView?.initializedPromise?.catch(() => undefined);
@@ -272,6 +307,11 @@ export class LatexMathTool {
         this.setToolbarButtonsActive(reader, true);
         await this.activateNativeTextInsertMode(reader);
       } catch (error) {
+        // 激活失败必须完整回滚：若激活中途抛错（如 PDF 页面文档尚未就绪、
+        // 找不到 .page 元素），`nativeTextInsertReaders` 标志会残留，之后用户
+        // 用原生"添加文字"工具时会被误判为数学插入而劫持弹编辑器。
+        // `cancelMathInsertMode` 幂等，可安全重复调用。
+        this.cancelMathInsertMode(reader);
         this.setToolbarButtonsActive(reader, false);
         this.logError("Unable to activate LaTeX insert mode", error);
         this.showError(reader, getString("math-tool-activate-error"));
@@ -592,9 +632,15 @@ export class LatexMathTool {
         for (const annotation of annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
         }
+        this.invalidateMathAnnotationCache(reader);
         this.ensureAnnotationMetadata(reader);
         const result = originalUpdateAnnotations(annotations);
         if (this.hasMathAnnotation(annotations)) {
+          this.scheduleRender(reader, true);
+        } else if (this.hasStaleRawHiddenControls(reader)) {
+          // 数学标注被改成普通文本：残留隐藏类会遮住文本。标记并补一次渲染
+          // 来清理（渲染完成即移除标记，日常热路径检查为 O(1)）。
+          this.staleRawHiddenReaders.add(reader);
           this.scheduleRender(reader, true);
         }
         return result;
@@ -616,6 +662,7 @@ export class LatexMathTool {
         for (const annotation of manager._annotations ?? annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
         }
+        this.invalidateMathAnnotationCache(reader);
         this.ensureAnnotationMetadata(reader);
         if (this.hasMathAnnotation(manager._annotations ?? annotations)) {
           this.scheduleRender(reader, true);
@@ -631,6 +678,7 @@ export class LatexMathTool {
         instant?: boolean,
       ) => {
         this.captureNativeTextAnnotation(reader, annotation);
+        this.invalidateMathAnnotationCache(reader);
         const result = originalSave(annotation, instant);
         if (this.hasMathAnnotation([annotation])) {
           this.scheduleRender(reader, true);
@@ -882,19 +930,47 @@ export class LatexMathTool {
    * unchanged, so cleanup of removed annotations is preserved.
    */
   private renderIfNeeded(runtime: ReaderRuntime): void {
-    if (
-      this.getMathAnnotations(runtime.reader).length === 0 &&
-      !this.hasAnyManagerOverlay(runtime)
-    ) {
-      return;
+    try {
+      if (
+        this.getMathAnnotations(runtime.reader).length === 0 &&
+        !this.hasAnyManagerOverlay(runtime) &&
+        !this.staleRawHiddenReaders.has(runtime.reader)
+      ) {
+        return;
+      }
+      this.renderMathAnnotations(runtime);
+    } catch (error) {
+      // reader 销毁过程中任何一步都可能抛错（死 wrapper 等）；记录并保证
+      // 下一次调度照常，避免单次失败让原文长时间暴露。
+      this.logError("Render pass failed", error);
     }
-    this.renderMathAnnotations(runtime);
   }
 
   private hasAnyManagerOverlay(runtime: ReaderRuntime): boolean {
     for (const doc of this.getPDFPageDocuments(runtime)) {
       if (doc.querySelector(`.${MANAGER_RENDER_CLASS}`)) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 是否有"残留隐藏"的原文控件：控件带 RAW_HIDDEN_CLASS 但其 value 已不含
+   * 数学内容（例如侧栏把数学标注改成了普通文本）。此时若不补一次渲染，隐藏
+   * 类会让普通文本保持透明不可见，直到下一次翻页/缩放。仅在标注编辑路径调用。
+   */
+  private hasStaleRawHiddenControls(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): boolean {
+    for (const doc of this.collectReaderDocuments(reader)) {
+      for (const element of doc.querySelectorAll<HTMLElement>(
+        `.${RAW_HIDDEN_CLASS}`,
+      )) {
+        const value = this.getTextFieldValue(element);
+        if (!value || !this.parsePayload(value)) {
+          return true;
+        }
       }
     }
     return false;
@@ -942,20 +1018,27 @@ export class LatexMathTool {
       try {
         const Observer = win.MutationObserver ?? runtime.win.MutationObserver;
         const observer = new Observer((mutations: MutationRecord[]) => {
-          if (this.shouldIgnoreMutations(mutations)) {
-            return;
+          // reader 销毁过程中 window 会变成死 wrapper，这里的 DOM/scale 访问
+          // 可能抛错。异常会中断整个回调（当次 hideNewRawMathText 未执行），
+          // 记录日志并让后续 mutation 批次照常处理，不因单次失败停止观察。
+          try {
+            if (this.shouldIgnoreMutations(mutations)) {
+              return;
+            }
+            this.hideNewRawMathText(runtime, mutations);
+            // A scale change means the page re-render was a zoom: the overlay
+            // pixel rects are stale until re-positioned. Tracking the scale lets
+            // us re-sync promptly during the zoom instead of only after it
+            // settles (the debounced render), avoiding visible formula drift/flash.
+            const scale = this.getCurrentScale(runtime);
+            if (scale !== undefined && scale !== runtime.lastScale) {
+              runtime.lastScale = scale;
+              this.scheduleOverlaySync(runtime);
+            }
+            this.scheduleRender(runtime.reader);
+          } catch (error) {
+            this.logError("Unable to process reader document mutations", error);
           }
-          this.hideNewRawMathText(runtime, mutations);
-          // A scale change means the page re-render was a zoom: the overlay
-          // pixel rects are stale until re-positioned. Tracking the scale lets
-          // us re-sync promptly during the zoom instead of only after it
-          // settles (the debounced render), avoiding visible formula drift/flash.
-          const scale = this.getCurrentScale(runtime);
-          if (scale !== undefined && scale !== runtime.lastScale) {
-            runtime.lastScale = scale;
-            this.scheduleOverlaySync(runtime);
-          }
-          this.scheduleRender(runtime.reader);
         });
         observer.observe(
           doc.body,
@@ -1047,6 +1130,19 @@ export class LatexMathTool {
     return has;
   }
 
+  /**
+   * 使 `readerHasMath` 的缓存失效。失效键（标注数量）在"编辑标注 comment
+   * 使数学↔非数学变化而数量不变"时不会变化，缓存会返回陈旧值，导致 zoom
+   * 重建标注层时原始 `[[math:…]]` 文本闪一帧。所有修改标注内容的入口
+   * （updateAnnotations / setAnnotations / _save 补丁）都应显式失效。
+   */
+  private invalidateMathAnnotationCache(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): void {
+    this.mathAnnotationCache.delete(reader);
+    this.mathAnnotationCacheCounts.delete(reader);
+  }
+
   private createMutationObserverOptions(win: Window): MutationObserverInit {
     // P3: 观察面只保留能影响渲染的信号，纯 class / data-* 变更不再触发 observer。
     //   - childList: 缩放/翻页/编辑时 pdf.js 重建标注层、新增/移除控件节点
@@ -1119,11 +1215,15 @@ export class LatexMathTool {
     this.refreshObservedDocuments(runtime);
     const docs = this.getPDFPageDocuments(runtime);
     const overlayCount = this.renderManagerOverlays(runtime, docs);
-    if (overlayCount > 0) {
+    // overlayCount > 0 走原有隐藏逻辑；无 overlay 但该 reader 被标记为有残留
+    // 隐藏（数学标注被改成普通文本）时同样执行清理，否则普通文本会被残留的
+    // 透明色遮住。正常路径（有 overlay）不增加任何查询。
+    if (overlayCount > 0 || this.staleRawHiddenReaders.has(runtime.reader)) {
       for (const doc of docs) {
         this.hideRawMathElements(doc);
       }
     }
+    this.staleRawHiddenReaders.delete(runtime.reader);
     this.logRenderDiagnostics(runtime, {
       docCount: docs.length,
       overlayCount,

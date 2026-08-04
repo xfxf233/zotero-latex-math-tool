@@ -20,8 +20,11 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
 
 1. **渲染/隐藏链路四方法不得在无真机验证下改动**：
    `renderMathAnnotations`、`renderManagerOverlays`、`hideRawMathElements`、`getElementsWithMathText`。
-   这四方法自提交 df1bcac 起未改动。曾因假设 DOM 结构（如 `data-annotation-id` == 标注 id、缩窄扫描根）
-   导致"渲染公式 + 原始 `[[math:…]]` 文本同时显示"的回归。**真机确认 DOM 结构前，不做任何此类假设。**
+   曾因假设 DOM 结构（如 `data-annotation-id` == 标注 id、缩窄扫描根）导致"渲染公式 + 原始
+   `[[math:…]]` 文本同时显示"的回归。**真机确认 DOM 结构前，不做任何此类假设。**
+   ⚠️ 2026-08 例外：`renderMathAnnotations` 为修"数学标注被改成普通文本后残留隐藏类遮住文本"
+   （用户已真机验证此 bug），新增残留隐藏清理分支：`staleRawHiddenReaders` 标记存在时即使无
+   overlay 也执行 `hideRawMathElements`。改动极小、正常路径不变，但仍需按验证流程真机回归一遍。
 2. 本环境（沙箱）**没有 Zotero**，无法跑 `npm run test`（需 Zotero 二进制，本地 `.env` 未填）。
    集成测试无法在此运行；运行时行为一律靠用户真机验证。
 
@@ -58,6 +61,11 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
     CSS 用 `chrome://mathtool/content/fonts/` 引用（与 favicon 同机制），真机验证**公式变系统
     默认字体**——PDF 页面加载不了 chrome:// 字体资源。data URL 是唯一验证可行的方式，勿再试
     外部字体 URL（Zotero 内置 KaTeX 字体同样不可跨文档引用）。
+11. **侧栏编辑把数学标注改成普通文本会残留 `RAW_HIDDEN_CLASS`**（2026-08 用户真机确认）：改后无
+    数学标注时 `updateAnnotations` 补丁不调度渲染，残留透明色会遮住普通文本直到下次翻页/缩放。
+    修复：`hasStaleRawHiddenControls` 在编辑路径检测残留 → 置 `staleRawHiddenReaders` 标记 →
+    `renderIfNeeded`/`renderMathAnnotations` 照常渲染并清理。热路径检查是 O(1) 的 WeakSet.has，
+    日常浏览零开销。**相关渲染改动见红线第 1 条例外记录。**
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 

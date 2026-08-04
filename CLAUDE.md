@@ -22,9 +22,10 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
    `renderMathAnnotations`、`renderManagerOverlays`、`hideRawMathElements`、`getElementsWithMathText`。
    曾因假设 DOM 结构（如 `data-annotation-id` == 标注 id、缩窄扫描根）导致"渲染公式 + 原始
    `[[math:…]]` 文本同时显示"的回归。**真机确认 DOM 结构前，不做任何此类假设。**
-   ⚠️ 2026-08 例外：`renderMathAnnotations` 为修"数学标注被改成普通文本后残留隐藏类遮住文本"
-   （用户已真机验证此 bug），新增残留隐藏清理分支：`staleRawHiddenReaders` 标记存在时即使无
-   overlay 也执行 `hideRawMathElements`。改动极小、正常路径不变，但仍需按验证流程真机回归一遍。
+   ⚠️ 2026-08 例外（均有真机验证）：`renderMathAnnotations` 为修"数学标注被改成普通文本后
+   残留隐藏类遮住文本"新增 `staleRawHiddenReaders` 清理分支（机制见经验教训 11）；
+   `renderManagerOverlays`/`hideRawMathElements` 复用 `renderMathAnnotations` 预扫描的控件
+   集合，消除每文档两遍全量扫描。均改动极小、正常路径不变、已真机回归。
 2. 本环境（沙箱）**没有 Zotero**，无法跑 `npm run test`（需 Zotero 二进制，本地 `.env` 未填）。
    集成测试无法在此运行；运行时行为一律靠用户真机验证。
 

@@ -48,6 +48,12 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
    是 **Map**（不是 Set 也不是数组，key 为 annotation 对象）。`_annotations` 读取统一走
    `getManagerAnnotations`（数组分支零开销、非数组退化为 `Array.from`）。pdf.js 自由文本
    控件把标注 id 存在 **`data-id`**（`data-annotation-id` 为空），原文在 textarea value 里。
+9. **真机确认补充（2026-08）**：pdf.js 的 `pdfViewer._pageLabels` 真机上**不存在**，
+   `getPageLabel` 实际走 `pageIndex+1` fallback（普通 PDF 页码正确；自定义页码 PDF 会显示错页码，
+   低风险暂不处理，勿再依赖 `_pageLabels`）。Σ 工具栏定位：中文界面"新增文字"按钮命中
+   `isFreeTextToolLabel` 正则，走 label 匹配路径、不依赖 fallback。`manager.setAnnotations`
+   打开/编辑时从不被调用（补丁是无害死代码，保留）；`manager.updateAnnotations` 在编辑时确实
+   触发（一次编辑计数 +1）。标注 `position.rects` 恒为单矩形。
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 

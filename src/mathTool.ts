@@ -113,6 +113,16 @@ export class LatexMathTool {
     HTMLElement,
     { width: number; height: number }
   >();
+  // dev-only：patchAnnotationManager 各补丁的实际调用计数，用于确认
+  // setAnnotations/updateAnnotations 包装是否真的被 Zotero 触发。
+  private setAnnotationsCalls = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    number
+  >();
+  private updateAnnotationsCalls = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    number
+  >();
 
   public startup(): void {
     this.toolbarHandler = (event) => {
@@ -573,6 +583,12 @@ export class LatexMathTool {
       manager.updateAnnotations = ((
         annotations: _ZoteroTypes.Reader.Annotation[],
       ) => {
+        if (__env__ === "development") {
+          this.updateAnnotationsCalls.set(
+            reader,
+            (this.updateAnnotationsCalls.get(reader) ?? 0) + 1,
+          );
+        }
         for (const annotation of annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
         }
@@ -590,6 +606,12 @@ export class LatexMathTool {
       manager.setAnnotations = (async (
         annotations: _ZoteroTypes.Reader.Annotation[],
       ) => {
+        if (__env__ === "development") {
+          this.setAnnotationsCalls.set(
+            reader,
+            (this.setAnnotationsCalls.get(reader) ?? 0) + 1,
+          );
+        }
         const result = await originalSetAnnotations(annotations);
         for (const annotation of manager._annotations ?? annotations) {
           this.captureNativeTextAnnotation(reader, annotation);
@@ -728,6 +750,10 @@ export class LatexMathTool {
       ),
     ].filter((candidate) => candidate !== button);
 
+    if (__env__ === "development") {
+      this.logToolbarPlacementDiagnostics(nativeButtons);
+    }
+
     const textButton =
       nativeButtons.find((candidate) =>
         this.isFreeTextToolLabel(this.getButtonLabel(candidate)),
@@ -742,6 +768,41 @@ export class LatexMathTool {
     }
 
     targetParent.insertBefore(button, textButton.nextSibling);
+  }
+
+  /**
+   * dev-only：记录工具栏按钮定位的真实结果，用于确认 Σ 按钮找"文字工具"
+   * 按钮的方式（标签正则 vs fallback）是否与真机工具栏结构吻合。
+   */
+  private logToolbarPlacementDiagnostics(nativeButtons: HTMLElement[]): void {
+    try {
+      const candidates = nativeButtons.slice(0, 15).map((candidate) => ({
+        tag: candidate.localName,
+        label: this.getButtonLabel(candidate).slice(0, 48) || "(empty)",
+        isFreeTextMatch: this.isFreeTextToolLabel(
+          this.getButtonLabel(candidate),
+        ),
+      }));
+      const textButton = nativeButtons.find((candidate) =>
+        this.isFreeTextToolLabel(this.getButtonLabel(candidate)),
+      );
+      const fallbackButton = textButton
+        ? undefined
+        : this.findLastAnnotationToolButton(nativeButtons);
+      Zotero.debug(
+        `[LaTeX Math Tool] toolbar placement ${JSON.stringify({
+          buttonCount: nativeButtons.length,
+          matchedByFreeTextLabel: Boolean(textButton),
+          fallbackToLastAnnotationTool: Boolean(fallbackButton),
+          matchedLabel: textButton
+            ? this.getButtonLabel(textButton).slice(0, 48)
+            : "",
+          candidates,
+        })}`,
+      );
+    } catch (error) {
+      this.logError("Unable to log toolbar placement", error);
+    }
   }
 
   private getButtonLabel(element: HTMLElement): string {
@@ -1784,12 +1845,19 @@ export class LatexMathTool {
     const summary = {
       ...stats,
       mathAnnotationCount: mathAnnotations.length,
-      // 真机确认 `_annotations` / `_unsavedAnnotations` 的实际容器类型，
-      // 判断防御代码是否覆盖真实结构。
+      scale: this.getCurrentScale(runtime),
+      // 真机确认 `_annotations` / `_unsavedAnnotations` 的实际容器类型、
+      // setAnnotations/updateAnnotations 补丁是否真的被调用。
       managerCollections: this.describeManagerCollections(runtime.reader),
+      pageLabels: this.describePageLabels(runtime),
       annotations: mathAnnotations.slice(0, 5).map((annotation) => ({
         id: annotation.id,
         pageIndex: this.getPDFPosition(annotation)?.pageIndex,
+        // sortIndex / pageLabel 是插件拼写/读取的两个猜测点：和侧栏实际
+        // 排序、页码标签对比即可确认格式是否正确。
+        sortIndex: annotation.sortIndex,
+        pageLabel: annotation.pageLabel,
+        rectsCount: this.getPDFPosition(annotation)?.rects?.length ?? 0,
         rect: this.getPDFPosition(annotation)?.rects?.[0],
         text: (annotation.text ?? "").slice(0, 64),
         comment: (annotation.comment ?? "").slice(0, 64),
@@ -1834,7 +1902,12 @@ export class LatexMathTool {
   /** dev-only：确认 manager 内部标注容器的真实类型（array / Set / 其他）。 */
   private describeManagerCollections(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
-  ): { annotationsType: string; unsavedAnnotationsType: string } {
+  ): {
+    annotationsType: string;
+    unsavedAnnotationsType: string;
+    setAnnotationsCalls: number;
+    updateAnnotationsCalls: number;
+  } {
     try {
       const manager = this.getAnnotationManager(reader) as unknown as {
         _annotations?: unknown;
@@ -1845,13 +1918,33 @@ export class LatexMathTool {
         unsavedAnnotationsType: this.describeListType(
           manager?._unsavedAnnotations,
         ),
+        setAnnotationsCalls: this.setAnnotationsCalls.get(reader) ?? 0,
+        updateAnnotationsCalls: this.updateAnnotationsCalls.get(reader) ?? 0,
       };
     } catch (error) {
       this.logError("Unable to inspect manager collections", error);
       return {
         annotationsType: "error",
         unsavedAnnotationsType: "error",
+        setAnnotationsCalls: 0,
+        updateAnnotationsCalls: 0,
       };
+    }
+  }
+
+  /** dev-only：确认 pdf.js 内部 `_pageLabels` 是否存在、内容是否正确。 */
+  private describePageLabels(runtime: ReaderRuntime): Record<string, unknown> {
+    try {
+      const app = (runtime.win as any)?.PDFViewerApplication;
+      const labels = app?.pdfViewer?._pageLabels;
+      return {
+        present: Array.isArray(labels),
+        length: Array.isArray(labels) ? labels.length : undefined,
+        sample: Array.isArray(labels) ? labels.slice(0, 5) : undefined,
+      };
+    } catch (error) {
+      this.logError("Unable to inspect page labels", error);
+      return { present: false };
     }
   }
 

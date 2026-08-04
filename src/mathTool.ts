@@ -1048,20 +1048,26 @@ export class LatexMathTool {
   }
 
   private createMutationObserverOptions(win: Window): MutationObserverInit {
+    // P3: 观察面只保留能影响渲染的信号，纯 class / data-* 变更不再触发 observer。
+    //   - childList: 缩放/翻页/编辑时 pdf.js 重建标注层、新增/移除控件节点
+    //     （`hideNewRawMathText` 依赖它消除原文闪烁）。
+    //   - characterData: 文本节点内容变化的兜底信号，内容变了就该重渲染。
+    //   - attributes + attributeFilter=["style"]: 标注/overlay 的坐标尺寸由 style
+    //     驱动（left/top/width/height/transform），style 变了才需要重新定位 overlay。
+    //   去掉 class 与 data-* 后：
+    //     - 文本选择、tooltip、hover 等纯 class 变更不再触发 observer，也就不会
+    //       50ms 后白跑一遍全量渲染；
+    //     - 我们隐藏原文时写的 `RAW_HIDDEN_CLASS` 不再自我触发一次防抖渲染
+    //       （旧行为：每隐藏一个 textarea 都多排一次全量渲染，缩放时是批量的）。
+    //   这几个属性都不影响 overlay 几何或 math 内容，无需重渲染；渲染链路是渲染时
+    //   按需 querySelector 读 `data-page-number`/`data-annotation-id`，不依赖观察它们的
+    //   变化（新增节点由 childList 保证被扫到）。
     const options: MutationObserverInit = {
       childList: true,
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: [
-        "style",
-        "class",
-        "data-annotation-id",
-        "data-annotation-key",
-        "data-id",
-        "data-editor-id",
-        "data-page-number",
-      ],
+      attributeFilter: ["style"],
     };
 
     try {

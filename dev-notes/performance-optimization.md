@@ -21,7 +21,8 @@ renderMathAnnotations
 └── logRenderDiagnostics          // 已门控，development 才跑
 ```
 
-触发：文本选中、翻页、缩放、tooltip、标注编辑都会触发（50ms 防抖后全量跑一遍）。
+触发：翻页、缩放、标注编辑、style 变更（标注坐标/尺寸）都会触发（50ms 防抖后全量跑一遍）。
+文本选中、tooltip、hover 等纯 class 变更不再触发（P3 起 attributeFilter 只留 style）。
 
 ## 二、已完成（均真机验证通过、已提交）
 
@@ -38,6 +39,11 @@ renderMathAnnotations
 - **`_annotations` 非数组防御**（`getManagerAnnotations`）：统一读取标注列表，数组分支
   零开销原引用返回；非数组退化为 `Array.from` 不抛错。真机确认（2026-08）：
   `_annotations` 是数组、`_unsavedAnnotations` 是 **Map** —— 内部容器不保证是数组。
+- **P3：MutationObserver 观察面收紧**（`createMutationObserverOptions`，2026-08 真机验证通过）：
+  `attributeFilter` 只留 `style`，去掉 `class` 与 5 个 `data-*`，`childList`/`characterData`
+  保留。纯 class 变更（文本选择/tooltip/hover）不再触发 observer；写 `RAW_HIDDEN_CLASS`
+  不再自我触发一次防抖全量渲染（旧行为：缩放时每隐藏一个 textarea 都多排一次全量渲染）。
+  `style` 保留保证缩放/拖动照常重定位 overlay。真机验证缩放/翻页/插入/编辑/文本选择无回归。
 
 ## 三、剩余可优化项（按优先级）
 
@@ -48,10 +54,7 @@ renderMathAnnotations
    字体。已回退 data URL 方案。data URL 是唯一验证可行的字体携带方式，不再尝试外部字体 URL。
    用户明确要求 **20 个字体全部保留、不可子集化**（文献常见 `\mathfrak`/`\mathcal` 等），
    P2 永久关闭，不再做任何减小字体体积的尝试。
-2. **P3：MutationObserver 触发面过大**：`characterData` + `attributes` 使文本选择、tooltip 等都触发渲染。
-   改进方向：收紧 `attributeFilter`、跳过纯 class 变更；或对"非标注层变更"只做防抖不做全量。
-   风险高（怕漏掉真实需要重渲染的变更），放最后。
-3. **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
+2. **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
 
 ## 四、验证方式
 

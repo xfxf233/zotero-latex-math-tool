@@ -46,6 +46,7 @@ type ReaderRuntime = {
   documentCleanups: Array<() => void>;
   resizeHandler: EventListener;
   renderTimer?: number;
+  repeatTimer?: number;
   toolMonitorTimer?: number;
   lastScale?: number;
   syncRAF?: number;
@@ -71,6 +72,9 @@ const FIT_CONTENT_CLASS = "zotero-latex-math-fit-content";
 // 选中公式后再按下：指针移动超过该像素数视为拖动（松手不弹编辑器），
 // 未拖动才视为"再点一下"（松手弹编辑器）。量级与浏览器点击判定一致。
 const CLICK_DRAG_THRESHOLD_PX = 5;
+// 惰性缓存 `inlineKatexFonts` 的替换结果：输入 CSS 是模块常量，结果恒定，
+// 避免每次注入样式 / 打开编辑器都对 1.1MB 字符串重复做正则替换。
+let cachedInlineKatexCSS: string | undefined;
 
 export class LatexMathTool {
   private toolbarHandler?: _ZoteroTypes.Reader.EventHandler<"renderToolbar">;
@@ -81,6 +85,9 @@ export class LatexMathTool {
   >();
   private readerDocs = new WeakMap<_ZoteroTypes.ReaderInstance, Document>();
   private watchedToolbarDocs = new WeakSet<Document>();
+  // 工具栏文档上的捕获监听清理函数（doc → cleanups）。doc 通常随阅读器窗口
+  // 关闭而销毁，但禁用/卸载插件时窗口可能仍开着，需要显式移除监听。
+  private toolbarDocCleanups = new WeakMap<Document, Array<() => void>>();
   private nativeTextInsertReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private activatingReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private directInsertCleanups = new WeakMap<
@@ -356,9 +363,14 @@ export class LatexMathTool {
       this.cancelMathInsertMode(reader, { preserveNativeTool: true });
     };
 
+    const cleanups: Array<() => void> = [];
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
       doc.addEventListener(eventName, cancelOnToolbarAction, true);
+      cleanups.push(() => {
+        doc.removeEventListener(eventName, cancelOnToolbarAction, true);
+      });
     }
+    this.toolbarDocCleanups.set(doc, cleanups);
   }
 
   private getToolbarButtons(
@@ -792,6 +804,11 @@ export class LatexMathTool {
     button: HTMLButtonElement,
     doc: Document,
   ): void {
+    // rAF 可能在 dispose（按钮已移除）后才执行；已断开连接的按钮直接跳过，
+    // 避免被重新插回工具栏。
+    if (!button.isConnected) {
+      return;
+    }
     const nativeButtons = [
       ...doc.querySelectorAll<HTMLElement>(
         'button,[role="button"],toolbarbutton',
@@ -910,7 +927,14 @@ export class LatexMathTool {
     }, 50);
 
     if (repeat) {
-      runtime.win.setTimeout(() => {
+      // 合并补帧定时器：插入/编辑路径会连续多次 scheduleRender(true)，不合并
+      // 会堆积多个 750ms 定时器重复渲染。复用同一句柄、每次重置；dispose 时
+      // 一并取消（见 disposeRuntime）。
+      if (runtime.repeatTimer) {
+        runtime.win.clearTimeout(runtime.repeatTimer);
+      }
+      runtime.repeatTimer = runtime.win.setTimeout(() => {
+        runtime.repeatTimer = undefined;
         if (!runtime.disposed) {
           this.renderIfNeeded(runtime);
         }
@@ -931,8 +955,11 @@ export class LatexMathTool {
    */
   private renderIfNeeded(runtime: ReaderRuntime): void {
     try {
+      // readerHasMath 以 `_annotations.length` 为失效键、O(1) 缓存结果，
+      // 缩放/翻页每帧调用时不用逐条 parse 标注内容（M4 保证编辑/保存路径
+      // 显式失效缓存）。其余两个条件是轻量 DOM/集合查询。
       if (
-        this.getMathAnnotations(runtime.reader).length === 0 &&
+        !this.readerHasMath(runtime.reader) &&
         !this.hasAnyManagerOverlay(runtime) &&
         !this.staleRawHiddenReaders.has(runtime.reader)
       ) {
@@ -2845,15 +2872,26 @@ export class LatexMathTool {
   }
 
   private inlineKatexFonts(css: string): string {
-    return css
+    if (cachedInlineKatexCSS !== undefined) {
+      return cachedInlineKatexCSS;
+    }
+    cachedInlineKatexCSS = css
       .replace(/url\(fonts\/([^)]+\.woff2)\)/g, (_match, fileName: string) => {
         const url = katexFontURLs[fileName];
+        if (!url && __env__ === "development") {
+          // 升级 KaTeX 后可能出现 CSS 引用了内联表缺失的字体；静默降级成系统
+          // 字体正是用户红线，dev 模式立即报警便于发现（仅在首次计算时检查）。
+          Zotero.debug(
+            `[LaTeX Math Tool] KaTeX font missing from inline map: ${fileName}`,
+          );
+        }
         return url ? `url(${url})` : `url(fonts/${fileName})`;
       })
       .replace(
         /,url\(fonts\/[^)]*\.(?:woff|ttf)\) format\("(?:woff|truetype)"\)/g,
         "",
       );
+    return cachedInlineKatexCSS;
   }
 
   private injectToolbarStyles(doc: Document): void {
@@ -3008,6 +3046,24 @@ export class LatexMathTool {
     } catch (error) {
       this.logError("Unable to cancel math insert mode on dispose", error);
     }
+    // 清理工具栏文档上的捕获监听与 Σ 按钮。禁用/卸载插件时 toolbar 文档可能
+    // 仍存活（阅读器窗口还开着），不清理会残留闭包引用已 dispose 的实例。
+    try {
+      const toolbarDoc = this.readerDocs.get(runtime.reader);
+      if (toolbarDoc) {
+        for (const cleanup of this.toolbarDocCleanups.get(toolbarDoc) ?? []) {
+          cleanup();
+        }
+        this.toolbarDocCleanups.delete(toolbarDoc);
+      }
+      const buttons = this.getToolbarButtons(runtime.reader);
+      for (const button of buttons) {
+        button.remove();
+      }
+      buttons.clear();
+    } catch (error) {
+      this.logError("Unable to clean up toolbar listeners", error);
+    }
     for (const observer of runtime.observers) {
       observer.disconnect();
     }
@@ -3021,6 +3077,10 @@ export class LatexMathTool {
       runtime.win.removeEventListener("resize", runtime.resizeHandler);
       if (runtime.renderTimer) {
         runtime.win.clearTimeout(runtime.renderTimer);
+      }
+      if (runtime.repeatTimer) {
+        runtime.win.clearTimeout(runtime.repeatTimer);
+        runtime.repeatTimer = undefined;
       }
       if (runtime.syncRAF !== undefined) {
         runtime.win.cancelAnimationFrame(runtime.syncRAF);

@@ -15,7 +15,8 @@ renderMathAnnotations
 ├── refreshObservedDocuments      // 增量，便宜
 ├── getPDFPageDocuments           // querySelector，便宜
 ├── renderManagerOverlays         // O(标注数 × 文档数)，主开销
-│   └── 每标注: 坐标换算 + 建/复 overlay + fitFormulaToOverlay（getBoundingClientRect 强制布局）
+│   └── 每标注: 坐标换算 + 建/复 overlay + fitFormulaToOverlay（内容尺寸已缓存，
+│       稳态渲染无 getBoundingClientRect 强制布局）
 ├── hideRawMathElements           // 扫 textarea/input 控件
 └── logRenderDiagnostics          // 已门控，development 才跑
 ```
@@ -31,6 +32,12 @@ renderMathAnnotations
 - **`logRenderDiagnostics` 生产短路**；`getMathAnnotations` 纯化（渲染路径不再写 DB / 改 dateModified）。
 - **`scheduleRender` 兜底 3 次→1 次**；缩放时用 rAF 一帧一次跟随（`scheduleOverlaySync`），
   observer 内检测 `pdfViewer.currentScale` 变化触发。
+- **fit-content 内容尺寸缓存**（`measureFitContent`）：按 span 元素 WeakMap 缓存 KaTeX
+  内容天然尺寸，稳态重定位渲染跳过 `getBoundingClientRect` 强制布局。span 随 LaTeX 变化
+  整体替换 → 条目自然失效；`document.fonts` 未 loaded 时不读缓存，避免字体指标固化错误。
+- **`_annotations` 非数组防御**（`getManagerAnnotations`）：统一读取标注列表，数组分支
+  零开销原引用返回；非数组退化为 `Array.from` 不抛错。真机确认（2026-08）：
+  `_annotations` 是数组、`_unsavedAnnotations` 是 **Map** —— 内部容器不保证是数组。
 
 ## 三、剩余可优化项（按优先级）
 

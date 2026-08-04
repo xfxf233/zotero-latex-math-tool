@@ -106,6 +106,13 @@ export class LatexMathTool {
     _ZoteroTypes.ReaderInstance,
     string | undefined
   >();
+  // 每个 overlay 的 fit-content span 的天然排版尺寸，按 span 元素本身作键。
+  // span 在 LaTeX 源/模式变化时被整体替换，因此条目随内容变化自然失效；
+  // 且只在 document.fonts 就绪后读取缓存，见 `measureFitContent`。
+  private formulaContentSizeCache = new WeakMap<
+    HTMLElement,
+    { width: number; height: number }
+  >();
 
   public startup(): void {
     this.toolbarHandler = (event) => {
@@ -963,8 +970,10 @@ export class LatexMathTool {
    * lookups — never a full scan on every mutation batch.
    */
   private readerHasMath(reader: _ZoteroTypes.ReaderInstance<"pdf">): boolean {
-    const manager = this.getAnnotationManager(reader);
-    const count = manager?._annotations?.length ?? 0;
+    const list = this.getAnnotationManager(reader)?._annotations;
+    const count = Array.isArray(list)
+      ? list.length
+      : ((list as { size?: number } | undefined)?.size ?? 0);
     if (this.mathAnnotationCacheCounts.get(reader) === count) {
       const cached = this.mathAnnotationCache.get(reader);
       if (cached !== undefined) {
@@ -1072,7 +1081,9 @@ export class LatexMathTool {
     let downX = 0;
     let downY = 0;
 
-    const isBlockedTarget = (event: Event): boolean => {
+    // 返回 true 表示事件落在"我们管理的阅读器表面"（而不是我们自己的
+    // modal / 编辑器 iframe）。只有阅读器表面的点击才驱动选中与编辑。
+    const isReaderSurfaceTarget = (event: Event): boolean => {
       const target = (event as MouseEvent).target as Element | null;
       return Boolean(
         target &&
@@ -1112,7 +1123,7 @@ export class LatexMathTool {
     // 从而区分第一次点击（仅选中）和"再点一下已选中公式"（待编辑）。
     const pointerDownHandler = (event: Event) => {
       pendingEdit = false;
-      if (!isBlockedTarget(event)) {
+      if (!isReaderSurfaceTarget(event)) {
         return;
       }
       const match = this.findMathAnnotationAtPoint(
@@ -1148,7 +1159,7 @@ export class LatexMathTool {
     };
 
     const clickHandler = (event: Event) => {
-      if (!isBlockedTarget(event)) {
+      if (!isReaderSurfaceTarget(event)) {
         return;
       }
       const match = this.findMathAnnotationAtPoint(
@@ -1177,7 +1188,7 @@ export class LatexMathTool {
     // 双击事件只做拦截，防止原生双击进入隐藏原文的文本编辑态；
     // 弹编辑器已由上面的 click 处理，避免重复打开。
     const dblClickHandler = (event: Event) => {
-      if (!isBlockedTarget(event)) {
+      if (!isReaderSurfaceTarget(event)) {
         return;
       }
       if (!this.findMathAnnotationAtPoint(runtime, doc, event as MouseEvent)) {
@@ -1444,11 +1455,33 @@ export class LatexMathTool {
     return rendered;
   }
 
+  /**
+   * 安全读取 annotation manager 内部的标注列表。
+   *
+   * 列表正常是数组（真机确认），但 Zotero 内部结构出过非数组的先例
+   * （`_unsavedAnnotations` 真机为 Map），所以渲染链路里不能假定数组——
+   * 非数组时退化为 Array.from 而不是直接抛错。数组分支是零开销的原引用返回。
+   */
+  private getManagerAnnotations(
+    manager: AnnotationManager | undefined,
+  ): _ZoteroTypes.Reader.Annotation[] {
+    const list = manager?._annotations;
+    if (Array.isArray(list)) {
+      return list;
+    }
+    if (list) {
+      return Array.from(
+        list as unknown as Iterable<_ZoteroTypes.Reader.Annotation>,
+      );
+    }
+    return [];
+  }
+
   private getMathAnnotations(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
   ): _ZoteroTypes.Reader.Annotation[] {
     const manager = this.getAnnotationManager(reader);
-    return (manager?._annotations ?? []).filter(
+    return this.getManagerAnnotations(manager).filter(
       (annotation) =>
         annotation.type === "text" &&
         Boolean(this.parsePayload(this.getMathContent(annotation))),
@@ -1604,6 +1637,50 @@ export class LatexMathTool {
       return;
     }
 
+    const size = this.measureFitContent(content);
+    if (!size) {
+      return;
+    }
+
+    const scale = this.clamp(
+      Math.min(
+        Math.max(rect.width, 1) / size.width,
+        Math.max(rect.height, 1) / size.height,
+      ),
+      0.1,
+      12,
+    );
+    const left = Math.max(0, (rect.width - size.width * scale) / 2);
+    const top = Math.max(0, (rect.height - size.height * scale) / 2);
+
+    content.style.transformOrigin = "left top";
+    content.style.transform = `scale(${scale})`;
+    content.style.left = `${left}px`;
+    content.style.top = `${top}px`;
+  }
+
+  /**
+   * 测量 fit-content span 的天然尺寸，按元素缓存。
+   *
+   * overlay 内部的 `<span class="fit-content">` 只在 LaTeX 源或模式变化时被
+   * 整体替换（`renderManagerOverlayElement` 重写 innerHTML），所以它的排版尺寸
+   * 在每次标注层 DOM 变化触发的稳态重定位渲染里是稳定的。按该 span 元素缓存
+   * 测量结果，可跳过每次重定位时的 `getBoundingClientRect` 强制布局读。
+   *
+   * 缓存只在 `document.fonts` 为 loaded 后才启用：KaTeX 字形指标在字体就绪前后
+   * 会变化，过早的测量不能固化成缓存；字体未就绪时回退到每次重测（原行为）。
+   */
+  private measureFitContent(
+    content: HTMLElement,
+  ): { width: number; height: number } | undefined {
+    const ownerDoc = content.ownerDocument;
+    const fontsReady =
+      !ownerDoc || !ownerDoc.fonts || ownerDoc.fonts.status === "loaded";
+    const cached = this.formulaContentSizeCache.get(content);
+    if (cached && fontsReady) {
+      return cached;
+    }
+
     content.style.position = "absolute";
     content.style.transform = "";
     content.style.left = "0";
@@ -1611,24 +1688,14 @@ export class LatexMathTool {
 
     const contentRect = content.getBoundingClientRect();
     if (!contentRect.width || !contentRect.height) {
-      return;
+      return undefined;
     }
 
-    const scale = this.clamp(
-      Math.min(
-        Math.max(rect.width, 1) / contentRect.width,
-        Math.max(rect.height, 1) / contentRect.height,
-      ),
-      0.1,
-      12,
-    );
-    const left = Math.max(0, (rect.width - contentRect.width * scale) / 2);
-    const top = Math.max(0, (rect.height - contentRect.height * scale) / 2);
-
-    content.style.transformOrigin = "left top";
-    content.style.transform = `scale(${scale})`;
-    content.style.left = `${left}px`;
-    content.style.top = `${top}px`;
+    const size = { width: contentRect.width, height: contentRect.height };
+    if (fontsReady) {
+      this.formulaContentSizeCache.set(content, size);
+    }
+    return size;
   }
 
   private setStyleIfChanged(
@@ -1717,6 +1784,9 @@ export class LatexMathTool {
     const summary = {
       ...stats,
       mathAnnotationCount: mathAnnotations.length,
+      // 真机确认 `_annotations` / `_unsavedAnnotations` 的实际容器类型，
+      // 判断防御代码是否覆盖真实结构。
+      managerCollections: this.describeManagerCollections(runtime.reader),
       annotations: mathAnnotations.slice(0, 5).map((annotation) => ({
         id: annotation.id,
         pageIndex: this.getPDFPosition(annotation)?.pageIndex,
@@ -1759,6 +1829,44 @@ export class LatexMathTool {
       dataEditorID: element.dataset.editorId ?? "",
       text: this.getSourceText(element).slice(0, 80),
     };
+  }
+
+  /** dev-only：确认 manager 内部标注容器的真实类型（array / Set / 其他）。 */
+  private describeManagerCollections(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): { annotationsType: string; unsavedAnnotationsType: string } {
+    try {
+      const manager = this.getAnnotationManager(reader) as unknown as {
+        _annotations?: unknown;
+        _unsavedAnnotations?: unknown;
+      };
+      return {
+        annotationsType: this.describeListType(manager?._annotations),
+        unsavedAnnotationsType: this.describeListType(
+          manager?._unsavedAnnotations,
+        ),
+      };
+    } catch (error) {
+      this.logError("Unable to inspect manager collections", error);
+      return {
+        annotationsType: "error",
+        unsavedAnnotationsType: "error",
+      };
+    }
+  }
+
+  /** 返回容器类型的可读描述，跨 realm 也用 toStringTag 兜底。 */
+  private describeListType(value: unknown): string {
+    if (value === undefined) {
+      return "undefined";
+    }
+    if (value === null) {
+      return "null";
+    }
+    if (Array.isArray(value)) {
+      return "array";
+    }
+    return Object.prototype.toString.call(value);
   }
 
   private async openEditorInDocument(
@@ -1979,7 +2087,10 @@ export class LatexMathTool {
       comment: payload.encoded,
     } as Parameters<typeof manager.addAnnotation>[0];
 
-    const beforeLength = manager._annotations.length;
+    const beforeList = manager._annotations;
+    const beforeLength = Array.isArray(beforeList)
+      ? beforeList.length
+      : ((beforeList as { size?: number } | undefined)?.size ?? 0);
     const annotation = this.cloneIntoManagerRealm(manager, rawAnnotation);
     const created = manager.addAnnotation(annotation);
 
@@ -2026,8 +2137,8 @@ export class LatexMathTool {
     // 诊断绝不能影响创建流程：任何字段访问异常都吞掉，不抛回创建路径。
     try {
       const { annotation, created, beforeLength, phase } = info;
-      // _unsavedAnnotations 运行时可能不是数组（真机报 .some is not a
-      // function，可能为 Set），按数组/Set 分别处理，拿不到就留空。
+      // _unsavedAnnotations 真机为 Map（早前真机报错曾猜测为 Set、未证实），不是
+      // 数组，不能直接 .some()。按数组 / 有 .has() 的容器（Map/Set）处理，拿不到就留空。
       const unsaved: unknown = manager._unsavedAnnotations;
       let unsavedQueued: boolean | undefined;
       if (Array.isArray(unsaved)) {
@@ -2038,7 +2149,9 @@ export class LatexMathTool {
         unsaved &&
         typeof (unsaved as { has?: unknown }).has === "function"
       ) {
-        unsavedQueued = Boolean((unsaved as Set<unknown>).has(created));
+        // Map 的 key 可能是 annotation 对象也可能是 id，两种都查；对 Set 也安全。
+        const container = unsaved as { has: (key: unknown) => boolean };
+        unsavedQueued = container.has(created) || container.has(created.id);
       }
       const summary = {
         phase,
@@ -2111,7 +2224,9 @@ export class LatexMathTool {
     const manager = this.getAnnotationManager(reader);
     const annotation =
       manager?._getAnnotationByID?.(annotationID) ??
-      manager?._annotations?.find((candidate) => candidate.id === annotationID);
+      this.getManagerAnnotations(manager).find(
+        (candidate) => candidate.id === annotationID,
+      );
     if (!annotation) {
       throw new Error("Unable to resolve the underlying Zotero annotation");
     }
@@ -2123,18 +2238,20 @@ export class LatexMathTool {
     manager: AnnotationManager,
     annotation: _ZoteroTypes.Reader.Annotation,
   ): _ZoteroTypes.Reader.Annotation[] {
-    const index = manager._annotations.findIndex(
-      (candidate) => candidate.id === annotation.id,
-    );
-    if (index === -1) {
-      manager._annotations.push(annotation);
-    } else {
-      manager._annotations[index] = annotation;
+    const list = manager._annotations;
+    if (Array.isArray(list)) {
+      const index = list.findIndex(
+        (candidate) => candidate.id === annotation.id,
+      );
+      if (index === -1) {
+        list.push(annotation);
+      } else {
+        list[index] = annotation;
+      }
+      return list.filter((candidate) => candidate.id === annotation.id);
     }
-
-    return manager._annotations.filter(
-      (candidate) => candidate.id === annotation.id,
-    );
+    // 非数组（Set 等）无法就地替换：把当前标注直接交给 Zotero 更新即可。
+    return [annotation];
   }
 
   private cloneIntoManagerRealm<T>(manager: AnnotationManager, value: T): T {

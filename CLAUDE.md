@@ -44,6 +44,10 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
    pageLabel/position/comment），Zotero 自动生成 id/日期/作者/tags、自行持久化、且会把 text
    填成空串。`position` 对 text 标注必需 `fontSize`/`rotation`（去掉直接报错）。`_save` 保留
    以保证立即落库（addAnnotation 自持久的时机不可控）。
+8. **真机确认（2026-08）**：`manager._annotations` 是**数组**；`manager._unsavedAnnotations`
+   是 **Map**（不是 Set 也不是数组，key 为 annotation 对象）。`_annotations` 读取统一走
+   `getManagerAnnotations`（数组分支零开销、非数组退化为 `Array.from`）。pdf.js 自由文本
+   控件把标注 id 存在 **`data-id`**（`data-annotation-id` 为空），原文在 textarea value 里。
 
 ## 剩余可优化（详见 dev-notes/performance-optimization.md）
 

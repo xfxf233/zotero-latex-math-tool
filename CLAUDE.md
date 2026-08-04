@@ -75,7 +75,7 @@ Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插
   **用户明确要求：20 个 KaTeX 字体（含 `\mathfrak`/`\mathcal` 等特殊字体）全部保留、不可子集化**
   （用户文献常见这些字体，嫌字母不够用）。任何减小字体体积的方向（子集化/chrome:// 复用）都不做。
 - **P3（已完成，2026-08 真机验证通过）**：MutationObserver `attributeFilter` 只留 `style`
-  （去掉 class 与 5 个 data-*），childList/characterData 保留。纯 class 变更不再触发 observer、
+  （去掉 class 与 5 个 data-\*），childList/characterData 保留。纯 class 变更不再触发 observer、
   写 `RAW_HIDDEN_CLASS` 不再自我触发渲染。若未来要改 `createMutationObserverOptions`，
   先读 dev-notes 里 P3 的完整理由再动。
 - **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。

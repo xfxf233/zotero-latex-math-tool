@@ -4,7 +4,7 @@
 
 [English](/README.md)
 
-这是一个适用于 Zotero 9 的 LaTeX 数学公式插件。它会在 PDF 阅读器工具栏中添加数学公式按钮，并使用 KaTeX 将公式渲染到 PDF 注释层。
+这是一个适用于 Zotero 的 LaTeX 数学公式插件。它会在 PDF 阅读器工具栏中添加数学公式按钮，并使用 KaTeX 将公式渲染到 PDF 注释层。
 
 ![演示效果](demo.png)
 
@@ -14,8 +14,9 @@
 2. 点击工具栏中的 `Σ` 按钮。
 3. 点击 PDF 页面中需要插入公式的位置。
 4. 输入不带 `$` 或 `$$` 的 LaTeX 内容。
-5. 根据需要开启或关闭“大公式模式”。
-6. 点击“插入”；以后可以双击公式进行编辑。
+5. 保持勾选“大公式模式”以插入较大的块级公式，取消勾选则为行内公式。
+6. 点击“插入”/“保存”。
+7. 以后双击渲染后的公式可再次编辑。
 
 ## 开发
 
@@ -28,12 +29,14 @@ npm run build
 
 ## 兼容性
 
-插件当前支持 Zotero 9：
+插件当前支持 Zotero 9 及以上：
 
 ```json
 "strict_min_version": "9.0",
-"strict_max_version": "9.*"
+"strict_max_version": "10.*"
 ```
+
+zotero 7 和 8 可能也能用，但没有经过测试。若想尝试，可以修改 addon/manifest.json 中 strict_min_version 字段，然后重新打包生成 xpi 文件。
 
 ## 感谢
 

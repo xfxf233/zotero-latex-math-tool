@@ -4,7 +4,7 @@
 
 [中文说明](doc/README-zhCN.md)
 
-A Zotero 9 plugin that adds a LaTeX math insertion tool to the PDF reader
+A Zotero plugin that adds a LaTeX math insertion tool to the PDF reader
 toolbar. Equations are stored as Zotero free-text annotations with a small text
 protocol and rendered back onto the PDF overlay with KaTeX.
 
@@ -33,12 +33,15 @@ The build command runs `zotero-plugin build` and `tsc --noEmit`. The packaged
 
 ## Zotero Compatibility
 
-The add-on manifest targets Zotero 9:
+The add-on manifest targets Zotero 9 and later:
 
 ```json
 "strict_min_version": "9.0",
-"strict_max_version": "9.*"
+"strict_max_version": "10.*"
 ```
+
+Zotero 7 and 8 may also work but are not tested. To try, change the
+`strict_min_version` field in `addon/manifest.json` and re-package the `.xpi`.
 
 ## Acknowledgements
 

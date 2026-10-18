@@ -27,6 +27,7 @@
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
     "test": "zotero-plugin test",
+    "test:rich-text": "node --experimental-strip-types test/unit/richText.test.ts",
     "update-deps": "npm update --save"
   },
   "dependencies": {

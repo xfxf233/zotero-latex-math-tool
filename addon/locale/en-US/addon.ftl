@@ -1,9 +1,9 @@
-math-tool-insert-tooltip = Insert LaTeX math formula
+math-tool-insert-tooltip = Insert formula or text
 math-tool-activate-error = Unable to activate the math insertion tool. Reopen the PDF and try again.
-math-editor-insert-title = Insert LaTeX Math Formula
-math-editor-edit-title = Edit LaTeX Math Formula
-math-editor-display-mode = Display mode
+math-editor-insert-title = Insert Formula or Text
+math-editor-edit-title = Edit Formula or Text
 math-editor-cancel = Cancel
 math-editor-save = Save
 math-editor-insert = Insert
-math-editor-empty-preview = Enter LaTeX to preview it here
+math-editor-placeholder = Text with $...$ for inline math; $$...$$ for display math
+math-editor-empty-preview = Type text or math to preview it here

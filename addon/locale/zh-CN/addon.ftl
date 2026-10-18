@@ -1,9 +1,9 @@
-math-tool-insert-tooltip = 插入 LaTeX 数学公式
+math-tool-insert-tooltip = 插入公式或文本
 math-tool-activate-error = 无法启用数学公式插入工具。请重新打开 PDF 后再试一次。
-math-editor-insert-title = 插入 LaTeX 数学公式
-math-editor-edit-title = 编辑 LaTeX 数学公式
-math-editor-display-mode = 大公式模式
+math-editor-insert-title = 插入公式或文本
+math-editor-edit-title = 编辑公式或文本
 math-editor-cancel = 取消
 math-editor-save = 保存
 math-editor-insert = 插入
-math-editor-empty-preview = 输入 LaTeX 后在这里预览
+math-editor-placeholder = 文本中用 $...$ 写行内公式，$$...$$ 写块级公式
+math-editor-empty-preview = 输入文本或公式后在这里预览

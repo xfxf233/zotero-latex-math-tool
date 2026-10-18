@@ -1,94 +1,112 @@
 # Zotero Latex Math Tool — 工作交接笔记
 
-本文件是跨会话恢复工作状态的依据，被自动加载。
+本文件是跨会话恢复工作状态的入口；细节不要继续堆在这里，放到 `dev-notes/` 对应文档。
 
 ## 项目是什么
 
-Zotero 9 插件：PDF 阅读器工具栏加 Σ 按钮，点击后指定位置插入 LaTeX 公式。
-公式以自由文本标注存储（协议：`[[math:display]] <latex>` / `[[math:inline]] <latex>`），
-用 KaTeX 渲染成覆盖层（overlay），并隐藏页面上的原始 LaTeX 文本。双击渲染后的公式可编辑。
-核心逻辑全在 `src/mathTool.ts`（`LatexMathTool` 类，约 2600 行）。
-其他：`src/katexFonts.ts`（20 个 KaTeX 字体 data URL 内联）、`src/index.ts`/`addon.ts`/`hooks.ts`（模板生命周期）、`src/utils/*`。
+Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编辑公式或混合文本。
+带 `mathtool` tag 的自由文本标注里可以混写普通文本、`$...$` 行内公式、`$$...$$` 块级公式；
+插件用 KaTeX 把整条标注渲染成 overlay，并隐藏页面上的原始源码。双击渲染后的标注可编辑。
+旧 `[[math:display]]` / `[[math:inline]]` 标注继续可读，编辑保存时迁移成 `$` / `$$`。
+原生文本标注（无 tag）完全不接管，保持原生编辑。
+
+核心：`src/mathTool.ts`（`LatexMathTool`，约 3600 行）；纯内容层 `src/richText/`
+（`parse.ts` 解析、`render.ts` HTML 构建，不依赖 Zotero，可单测）。
 
 ## 沟通约定（用户偏好）
 
 - **始终用中文回复。**
-- 用户用 AI 开发、**不读代码**。给结论、风险和可操作建议，不要大段代码/文件 dump。
-- 用户只想要一个简单小功能，**非常在意不要拖慢 Zotero**。一切改动以性能为最高优先级，但绝不牺牲已确认正常的功能。
+- 用户用 AI 开发、**不读代码**：给结论、风险、可操作建议，不要大段代码/文件 dump。
+- 用户非常在意**不要拖慢 Zotero**。改动优先“增量/按需/复用”，但不牺牲已确认正常的功能。
+- 只做数学 + 文本：换行、`$...$`、`$$...$$`、`\$`。不做标题/列表/加粗、公式编号、
+  `\(...\)` / `\[...\]`。
 
-## ⚠️ 红线（来自真实回归事故，勿再犯）
+## 当前状态
 
-1. **渲染/隐藏链路四方法不得在无真机验证下改动**：
-   `renderMathAnnotations`、`renderManagerOverlays`、`hideRawMathElements`、`getElementsWithMathText`。
-   曾因假设 DOM 结构（如 `data-annotation-id` == 标注 id、缩窄扫描根）导致"渲染公式 + 原始
-   `[[math:…]]` 文本同时显示"的回归。**真机确认 DOM 结构前，不做任何此类假设。**
-   ⚠️ 2026-08 例外（均有真机验证）：`renderMathAnnotations` 为修"数学标注被改成普通文本后
-   残留隐藏类遮住文本"新增 `staleRawHiddenReaders` 清理分支（机制见经验教训 11）；
-   `renderManagerOverlays`/`hideRawMathElements` 复用 `renderMathAnnotations` 预扫描的控件
-   集合，消除每文档两遍全量扫描。均改动极小、正常路径不变、已真机回归。
-2. 本环境（沙箱）**没有 Zotero**，无法跑 `npm run test`（需 Zotero 二进制，本地 `.env` 未填）。
-   集成测试无法在此运行；运行时行为一律靠用户真机验证。
+- 分支：`feat/rich-text-math`，**未合并 main**。
+- 2026-10-18 用户真机验证：插入、混合文本渲染、双击编辑基本正常；tag 结构问题已按
+  Zotero 源码修正。完整回归清单见下。
+- 工作区可能有未暂存的文档/测试目录调整，提交前先 `git add -A`。
 
-## 经验教训（勿再踩）
+## ⚠️ 红线
 
-1. **Zotero 事件/DOM/state，真机验证前勿假设**。已确认的结构：工具栏与 PDF 页面在**同一文档**；
-   Zotero 工具在 pointerdown/mousedown 就切换并抑制 click；`internalReader._state.tool` 才是工具状态真相源。
-2. 防抖在连续事件流里会被反复重置。需要时按**信号类型**提速（本会话用 `pdfViewer.currentScale` 变化识别
-   缩放 → rAF 一帧一次渲染）；不要全局缩短防抖。
-3. **MutationObserver 回调在 paint 前执行**，可同步重隐藏新插入的原文节点，消除渲染闪烁。
-4. 性能热路径的每次新增判断都要 **O(1) 短路**（如 `readerHasMath` 以 `_annotations.length` 作失效键），
-   且只在确实有数学标注时才做事。
-5. 状态切换用"**基线 + 连续 N 次偏离**"判定（tool monitor 用基线 `_state.tool` + 连续 2 次偏离），
-   避免 Zotero 内部短暂重同步导致误杀。
-6. **Zotero 自由文本标注的正文在 `comment` 字段，`text` 字段留空**。侧栏编辑只更新 `comment`；
-   插件所有数学内容读取一律走 `getMathContent`（只读 `comment`），**不要用 `text ?? comment`**：
-   `"" ?? comment` 遇空串返回空串，导致数学标注识别失败、渲染被短路（addAnnotation 建出的标注
-   text 是空串）。创建/保存标注时只写 `comment`、不要写 `text`。
-7. **Σ 新建走原生 `manager.addAnnotation`**（cbf9f79 起）：传最小入参（type/color/sortIndex/
-   pageLabel/position/comment），Zotero 自动生成 id/日期/作者/tags、自行持久化、且会把 text
-   填成空串。`position` 对 text 标注必需 `fontSize`/`rotation`（去掉直接报错）。`_save` 保留
-   以保证立即落库（addAnnotation 自持久的时机不可控）。
-8. **真机确认（2026-08）**：`manager._annotations` 是**数组**；`manager._unsavedAnnotations`
-   是 **Map**（不是 Set 也不是数组，key 为 annotation 对象）。`_annotations` 读取统一走
-   `getManagerAnnotations`（数组分支零开销、非数组退化为 `Array.from`）。pdf.js 自由文本
-   控件把标注 id 存在 **`data-id`**（`data-annotation-id` 为空），原文在 textarea value 里。
-9. **真机确认补充（2026-08）**：pdf.js 的 `pdfViewer._pageLabels` 真机上**不存在**，
-   `getPageLabel` 实际走 `pageIndex+1` fallback（普通 PDF 页码正确；自定义页码 PDF 会显示错页码，
-   低风险暂不处理，勿再依赖 `_pageLabels`）。Σ 工具栏定位：中文界面"新增文字"按钮命中
-   `isFreeTextToolLabel` 正则，走 label 匹配路径、不依赖 fallback。`manager.setAnnotations`
-   打开/编辑时从不被调用（补丁是无害死代码，保留）；`manager.updateAnnotations` 在编辑时确实
-   触发（一次编辑计数 +1）。标注 `position.rects` 恒为单矩形。
-10. **真机确认（2026-08）**：KaTeX 字体**只能 data URL 内联**。试过把字体改独立 woff2 文件、
-    CSS 用 `chrome://mathtool/content/fonts/` 引用（与 favicon 同机制），真机验证**公式变系统
-    默认字体**——PDF 页面加载不了 chrome:// 字体资源。data URL 是唯一验证可行的方式，勿再试
-    外部字体 URL（Zotero 内置 KaTeX 字体同样不可跨文档引用）。
-11. **侧栏编辑把数学标注改成普通文本会残留 `RAW_HIDDEN_CLASS`**（2026-08 用户真机确认）：改后无
-    数学标注时 `updateAnnotations` 补丁不调度渲染，残留透明色会遮住普通文本直到下次翻页/缩放。
-    修复：`hasStaleRawHiddenControls` 在编辑路径检测残留 → 置 `staleRawHiddenReaders` 标记 →
-    `renderIfNeeded`/`renderMathAnnotations` 照常渲染并清理。热路径检查是 O(1) 的 WeakSet.has，
-    日常浏览零开销。**相关渲染改动见红线第 1 条例外记录。**
+1. **渲染/隐藏链路四方法**：`renderMathAnnotations`、`renderManagerOverlays`、
+   `hideRawMathElements`、`getElementsWithMathText`。没有真机验证不要改结构。
+   - 2026-08 已验证的例外：`staleRawHiddenReaders` 清理；预扫描控件集合复用。
+   - 2026-10 混合文本改造：四方法改为传 annotations/sources/ids；`getElementsWithMathText`/
+     `hideRawMathElements` 改为 **data-id 优先**、无 id 才回退 value 匹配。基本路径已被用户
+     真机验证；**后续再动这四方法仍要做完整回归**。出现“原始 `$...$` + overlay 同时显示”时，
+     优先查 data-id 匹配。
+2. 本沙箱**没有 Zotero**：`npm test`（集成测试）跑不了；运行时行为一律靠用户真机验证。
+   可以跑 `npm run build`、`tsc --noEmit`、eslint、prettier、`npm run test:rich-text`。
 
-## 剩余可优化（详见 dev-notes/performance-optimization.md）
+## 关键规则（必须记住）
 
-- **P2（已判不可行，永久关闭）**：KaTeX 字体 data URL 内联（bundle 约 1.1MB）。曾试改独立字体文件 +
-  chrome:// 引用（bundle 可减 347KB），真机验证 PDF 页面加载失败、公式变系统字体，已回退。
-  **用户明确要求：20 个 KaTeX 字体（含 `\mathfrak`/`\mathcal` 等特殊字体）全部保留、不可子集化**
-  （用户文献常见这些字体，嫌字母不够用）。任何减小字体体积的方向（子集化/chrome:// 复用）都不做。
-- **P3（已完成，2026-08 真机验证通过）**：MutationObserver `attributeFilter` 只留 `style`
-  （去掉 class 与 5 个 data-\*），childList/characterData 保留。纯 class 变更不再触发 observer、
-  写 `RAW_HIDDEN_CLASS` 不再自我触发渲染。若未来要改 `createMutationObserverOptions`，
-  先读 dev-notes 里 P3 的完整理由再动。
-- **暂缓**：per-annotation 的 payload/position 缓存、`findPageElement` 按页取集合（标注数少时收益有限）。
+1. 标注正文在 `comment`，`text` 恒空。读取一律 `getMathContent`（只读 comment），
+   **不要 `text ?? comment`**；创建/保存只写 comment。
+2. **tag 形状**：阅读器内部是 `{ name: "mathtool", color? }`；Zotero 保存时
+   `fromJSON` 用 `name` 生成条目 tag `{ tag }`。插件**只写 `{ name }`**；写字符串或
+   `{ tag }` 会报 `Tag data must contain 'tag' property`。识别时三种形态都兼容。
+3. `addAnnotation` 只传最小入参（type/color/sortIndex/pageLabel/position/comment）；
+   text 标注 `position.fontSize`/`rotation` 必需；`_save` 保留用于立即落库。
+4. 原文控件 id 在 `data-id`（`data-annotation-id` 为空）；隐藏/hide 匹配以 data-id 为准，
+   没有 id 才回退 value。
+5. **纯公式**（只有一个公式节点、没有普通文本；含 legacy）继续走旧的
+   `fit-content` + `fitFormulaToOverlay`；只有文本+公式混排才走 rich 布局。
+   不要把纯公式改成 rich，否则宽公式会横向溢出、旧公式视觉会变。
+6. 编辑器测量：先在 iframe 里渲染预览 → 强制布局 → 等 `editorDoc.fonts.ready` → 用同一套
+   rich CSS 量出 PDF 单位宽高 → 按当前页 viewport scale 写回 rect。**不要**改回在 reader
+   文档里用未加载字体测量。
+7. 识别先看 tag / 旧前缀，再解析 comment；解析结果、KaTeX HTML、rich 高度都有缓存。
+   普通文本标注不解析。
+8. 侧栏会看到 `mathtool` tag；旧标注只有在插件里编辑保存后才补 tag。
+9. **`updateAnnotations` 入参可能是 partial**（侧栏只传 `{id, comment}` / `{id, tags}`）：
+   必须在 `originalUpdateAnnotations` 之后按 id 从 manager 取回完整标注，再判断是否数学标注、
+   是否调度渲染。不要直接对 partial 调 `parseAnnotationMath`（会漏渲染）。
+10. **编辑器 iframe 必须从 `getRuntimeDocuments` 排除**（按 `frameElement` 的
+    `zotero-latex-math-editor-frame` 类判断）；否则每次打开编辑器都可能被
+    `refreshObservedDocuments` 观察并留下一个不释放的 MutationObserver/Document 引用。
 
-**优化原则**：优先"增量/按需/复用"而非全量重扫；每次改动必须能解释清楚为什么不变慢；跑不动的部分先列出，不要盲改。
+## 文档索引
+
+- [dev-notes/README.md](dev-notes/README.md)：开发文档索引 + 单测/集成测试怎么跑
+- [dev-notes/rich-text-spec.md](dev-notes/rich-text-spec.md)：混合文本功能规格与实现状态
+- [dev-notes/zotero-notes.md](dev-notes/zotero-notes.md)：Zotero 运行时事实（tag、comment、data-id、
+  manager、字体等）
+- [dev-notes/performance-optimization.md](dev-notes/performance-optimization.md)：渲染热路径与优化
+- 用户说明：[README.md](README.md) / [doc/README-zhCN.md](doc/README-zhCN.md)
 
 ## 验证流程
 
-- 改完必须过：`npm run build`（含 `tsc --noEmit`）、`npx eslint src/`、`npx prettier --check src/`。
-- 运行时行为：让用户重新安装 `.scaffold/build/zotero-latex-math-tool.xpi` 真机验证。
-- 需要真机 DOM 信息（无需 `npm run start`）：`npx zotero-plugin build --dev` 构建 dev 版
-  （只产出 `addon/` 目录，不生成 xpi，需手动打包
-  `(cd .scaffold/build/addon && zip -qr ../zotero-latex-math-tool.xpi .)`），装进 Zotero →
-  帮助 > 调试日志 > 启用日志 → 查看输出日志，搜 `render diagnostics` 行复制 JSON。
-  注意：production build 会把 `__env__` 编译为 `production`、诊断代码被短路；抓完用 `npm run build`
-  恢复 production 再重装。
+```bash
+npm run build                 # zotero-plugin build + tsc --noEmit
+npx eslint src test
+npx prettier --check .
+npm run test:rich-text        # 纯解析/渲染单测，不需要 Zotero
+```
+
+- 修改后必须过以上命令。
+- `npm test` 是 Zotero 集成测试（`test/integration/`），需要 Zotero 二进制和 `.env`，
+  本沙箱无法运行。
+- 需要真机 DOM/日志：`npx zotero-plugin build --dev` → 手动打 zip → 装进 Zotero →
+  帮助 > 调试日志 > 启用日志 → 搜 `render diagnostics`。production 构建会短路诊断代码，
+  抓完重新 `npm run build`。
+
+### `feat/rich-text-math` 真机回归清单
+
+1. 新插入后重启 Zotero / 重开 PDF：`mathtool` tag 仍在，公式仍渲染。
+2. comment 换行原样保留；多行混排正常。
+3. rect 高度持久化；100/150/200% 缩放下文字/基线与选择框对齐。
+4. 原生文本标注（无 tag，含 `$` 也不接管）保持原生编辑。
+5. 侧栏把数学标注改成普通文本后，原文恢复显示，无残留透明隐藏。
+6. **侧栏直接改数学标注的 comment（不是插件弹窗）**：overlay 会重新渲染，内容跟上；
+   长混排可能因 Zotero 按原始 `$...$` 文本调整 rect 而出现缩小/留白（见剩余工作）。
+7. 旧 `[[math:...]]` 标注照常渲染；编辑保存后迁移为 `$` / `$$`。
+8. 混排 + 多公式标注的滚动/缩放性能。
+
+## 剩余工作
+
+- 侧栏编辑数学标注后按当前宽度重算高度并写回 rect（现在靠 overlay 整体缩小兜底）。
+- 混排中的超宽块级公式目前可能横向超出标注框；需要决定是允许加宽还是单独缩放。
+- 文本字体/行高与 Zotero 原生文字标注的视觉对齐（目前用 Helvetica/Arial 栈，真机微调）。
+- `mathContentCache` 上限 200 可按实测调小；`findPageElement` 按页取集合暂缓。

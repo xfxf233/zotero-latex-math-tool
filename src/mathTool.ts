@@ -1,17 +1,17 @@
 import katexStyles from "katex/dist/katex.min.css";
 import { renderToString } from "katex";
 import { katexFontURLs } from "./katexFonts";
+import {
+  MATH_ANNOTATION_TAG,
+  hasLegacyMathPrefix,
+  hasMathTag,
+  parseMathContent,
+  type MathContent,
+  type MathMode,
+} from "./richText/parse";
+import { renderRichDocument } from "./richText/render";
 import toolStyles from "./styles.css";
 import { getString } from "./utils/locale";
-
-type MathMode = "display" | "inline";
-
-type MathPayload = {
-  mode: MathMode;
-  latex: string;
-  encoded: string;
-  renderedSize?: FormulaSize;
-};
 
 type ClickLocation = {
   pageIndex: number;
@@ -28,6 +28,7 @@ type Viewport = {
   convertToViewportRectangle?: (rect: number[]) => number[];
   width?: number;
   height?: number;
+  scale?: number;
 };
 
 type ViewportRect = {
@@ -35,6 +36,7 @@ type ViewportRect = {
   top: number;
   width: number;
   height: number;
+  scale?: number;
 };
 
 type ReaderRuntime = {
@@ -61,14 +63,24 @@ type AnnotationManager = _ZoteroTypes.Reader.AnnotationManager & {
   ) => void;
 };
 
-const DISPLAY_PREFIX = "[[math:display]]";
-const INLINE_PREFIX = "[[math:inline]]";
 const STYLE_ID = "zotero-latex-math-tool-styles";
 const TOOLBAR_STYLE_ID = "zotero-latex-math-tool-toolbar-styles";
 const MANAGER_RENDER_CLASS = "zotero-latex-math-manager-render";
 const PAGE_OVERLAY_CLASS = "zotero-latex-math-page-overlay";
 const RAW_HIDDEN_CLASS = "zotero-latex-math-raw-hidden";
 const FIT_CONTENT_CLASS = "zotero-latex-math-fit-content";
+const RICH_CONTENT_CLASS = "zotero-latex-math-rich-content";
+const RICH_MEASURE_CLASS = "zotero-latex-math-rich-measure";
+const EDITOR_FRAME_CLASS = "zotero-latex-math-editor-frame";
+// 混合内容的排版基准：测量与 overlay 都按 14px（PDF 单位）排版，再整体按
+// 当前缩放做 transform，缩放时不重排。行高必须与 styles.css 保持一致。
+const MATH_BASE_FONT_SIZE = 14;
+const RICH_LINE_HEIGHT = 1.4;
+const RICH_MIN_WIDTH = 36;
+const RICH_TEXT_MAX_WIDTH = 320;
+// 纯公式（没有普通文本）沿用旧公式的宽度上限，避免大公式被 320 截断。
+const RICH_FORMULA_MAX_WIDTH = 720;
+const RICH_MIN_HEIGHT = 20;
 // 选中公式后再按下：指针移动超过该像素数视为拖动（松手不弹编辑器），
 // 未拖动才视为"再点一下"（松手弹编辑器）。量级与浏览器点击判定一致。
 const CLICK_DRAG_THRESHOLD_PX = 5;
@@ -129,6 +141,24 @@ export class LatexMathTool {
   private formulaContentSizeCache = new WeakMap<
     HTMLElement,
     { width: number; height: number }
+  >();
+  // 混合内容按"内容元素 + 基准宽度 + 字号"缓存天然高度，稳态渲染不读布局。
+  private richContentSizeCache = new WeakMap<
+    HTMLElement,
+    { width: number; height: number; fontSize: number }
+  >();
+  // 解析结果按 comment 原文缓存（纯函数、内容不变结果不变）；上限防止长文本
+  // 标注无限增长。命中率在每次渲染/编辑都会被用到。
+  private mathContentCache = new Map<string, MathContent | null>();
+  // KaTeX 输出只由 (latex, display) 决定；多条标注/编辑器实时预览里重复公式
+  // 很常见，缓存 HTML 可跳过重复的 renderToString。
+  private katexHtmlCache = new Map<string, string>();
+  // 每个 reader 的"数学标注原文集合 + 标注 id 集合"，用于 observer 热路径按
+  // value / data-id 匹配隐藏，避免在 hideNewRawMathText 里反复解析所有标注。
+  // 失效键与 readerHasMath 一致。
+  private mathControlCache = new WeakMap<
+    _ZoteroTypes.ReaderInstance,
+    { count: number; sources: Set<string>; ids: Set<string> }
   >();
   // dev-only：patchAnnotationManager 各补丁的实际调用计数，用于确认
   // setAnnotations/updateAnnotations 包装是否真的被 Zotero 触发。
@@ -560,15 +590,19 @@ export class LatexMathTool {
       this.cancelMathInsertMode(reader);
 
       void this.openEditorInDocument(this.readerDocs.get(reader) ?? doc, {
-        initial: { latex: "", mode: "display" },
+        initialSource: "",
+        isNew: true,
+        baseFontSize: MATH_BASE_FONT_SIZE,
         title: getString("math-editor-insert-title"),
-        onSave: async (payload) => {
+        onSave: async (source, renderedSize) => {
           await this.createAnnotationWithManager(
             reader,
             manager,
             location,
-            payload,
+            source,
             doc,
+            MATH_BASE_FONT_SIZE,
+            renderedSize,
           );
           this.ensureReader(reader)
             .then((runtime) => this.scheduleRender(runtime.reader, true))
@@ -626,6 +660,7 @@ export class LatexMathTool {
       annotation: Parameters<typeof manager.addAnnotation>[0],
     ) => {
       const created = originalAddAnnotation(annotation);
+      this.invalidateMathAnnotationCache(reader);
       this.captureNativeTextAnnotation(reader, created);
       return created;
     }) as typeof manager.addAnnotation;
@@ -645,9 +680,16 @@ export class LatexMathTool {
           this.captureNativeTextAnnotation(reader, annotation);
         }
         this.invalidateMathAnnotationCache(reader);
-        this.ensureAnnotationMetadata(reader);
         const result = originalUpdateAnnotations(annotations);
-        if (this.hasMathAnnotation(annotations)) {
+        // Zotero 的 updateAnnotations 入参可能是 partial（例如侧栏只传
+        // { id, comment } 或 { id, tags }）。originalUpdateAnnotations 会把它们
+        // 与已有标注合并写回 _annotations，所以判定/元数据必须读合并后的完整对象。
+        this.ensureAnnotationMetadata(reader);
+        const updatedAnnotations = this.resolveAnnotationsById(
+          reader,
+          annotations,
+        );
+        if (this.hasMathAnnotation(updatedAnnotations)) {
           this.scheduleRender(reader, true);
         } else if (this.hasStaleRawHiddenControls(reader)) {
           // 数学标注被改成普通文本：残留隐藏类会遮住文本。标记并补一次渲染
@@ -744,12 +786,50 @@ export class LatexMathTool {
     return annotation.comment ?? "";
   }
 
+  private getAnnotationFontSize(
+    annotation: _ZoteroTypes.Reader.Annotation,
+  ): number {
+    const value = Number(
+      (annotation.position as { fontSize?: unknown }).fontSize,
+    );
+    return Number.isFinite(value) && value > 0 ? value : MATH_BASE_FONT_SIZE;
+  }
+
+  /**
+   * 识别 + 解析一条标注的内容。解析结果按 comment 原文缓存；tag / 旧前缀的
+   * 来源判断每次都要做（同一段文本可能先被加 tag 再变成数学标注）。
+   */
+  private parseAnnotationMath(
+    annotation: _ZoteroTypes.Reader.Annotation,
+  ): MathContent | null {
+    if (annotation.type !== "text") {
+      return null;
+    }
+
+    const source = this.getMathContent(annotation);
+    // 先做便宜的来源判断：原生文本标注（没有 mathtool tag、也没有旧前缀）
+    // 根本不解析正文，避免每次渲染把所有普通文本标注都过一遍解析器。
+    if (!hasMathTag(annotation.tags) && !hasLegacyMathPrefix(source)) {
+      return null;
+    }
+
+    let content = this.mathContentCache.get(source);
+    if (content === undefined) {
+      content = parseMathContent(source);
+      if (this.mathContentCache.size >= 200) {
+        this.mathContentCache.clear();
+      }
+      this.mathContentCache.set(source, content);
+    }
+    return content;
+  }
+
   private hasMathAnnotation(
     annotations: _ZoteroTypes.Reader.Annotation[] | undefined,
   ): boolean {
     return Boolean(
-      annotations?.some((annotation) =>
-        this.parsePayload(this.getMathContent(annotation)),
+      annotations?.some(
+        (annotation) => this.parseAnnotationMath(annotation) !== null,
       ),
     );
   }
@@ -762,7 +842,7 @@ export class LatexMathTool {
       !annotation ||
       annotation.type !== "text" ||
       !this.nativeTextInsertReaders.has(reader) ||
-      this.parsePayload(this.getMathContent(annotation))
+      this.parseAnnotationMath(annotation)
     ) {
       return false;
     }
@@ -784,11 +864,21 @@ export class LatexMathTool {
       return;
     }
 
+    const baseFontSize = this.getAnnotationFontSize(annotation);
     await this.openEditorInDocument(doc, {
-      initial: { latex: "", mode: "display" },
+      initialSource: "",
+      isNew: true,
+      baseFontSize,
       title: getString("math-editor-insert-title"),
-      onSave: async (payload) => {
-        await this.updateManagerAnnotation(reader, annotation, payload, doc);
+      onSave: async (source, renderedSize) => {
+        await this.updateManagerAnnotation(
+          reader,
+          annotation,
+          source,
+          doc,
+          baseFontSize,
+          renderedSize,
+        );
         this.ensureReader(reader)
           .then((runtime) => {
             this.scheduleRender(runtime.reader, true);
@@ -990,12 +1080,12 @@ export class LatexMathTool {
   private hasStaleRawHiddenControls(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
   ): boolean {
+    const { sources, ids } = this.getMathControlSets(reader);
     for (const doc of this.collectReaderDocuments(reader)) {
       for (const element of doc.querySelectorAll<HTMLElement>(
         `.${RAW_HIDDEN_CLASS}`,
       )) {
-        const value = this.getTextFieldValue(element);
-        if (!value || !this.parsePayload(value)) {
+        if (!this.isMathControl(element, sources, ids)) {
           return true;
         }
       }
@@ -1097,41 +1187,57 @@ export class LatexMathTool {
     if (!this.readerHasMath(runtime.reader)) {
       return;
     }
+    const { sources, ids } = this.getMathControlSets(runtime.reader);
     for (const mutation of mutations) {
       if (mutation.type !== "childList") {
         continue;
       }
       for (const node of mutation.addedNodes) {
         if (node && node.nodeType === 1) {
-          this.hideMathTextFields(node as Element);
+          this.hideMathTextFields(node as Element, sources, ids);
         }
       }
     }
   }
 
-  private hideMathTextFields(root: Element): void {
+  private hideMathTextFields(
+    root: Element,
+    sources: Set<string>,
+    ids: Set<string>,
+  ): void {
     const tag = root.localName.toLowerCase();
     if (tag === "textarea" || tag === "input") {
-      this.hideMathTextField(root as HTMLElement);
+      this.hideMathTextField(root as HTMLElement, sources, ids);
       return;
     }
     for (const field of root.querySelectorAll<HTMLElement>("textarea,input")) {
-      this.hideMathTextField(field);
+      this.hideMathTextField(field, sources, ids);
     }
   }
 
-  private hideMathTextField(field: HTMLElement): void {
+  private hideMathTextField(
+    field: HTMLElement,
+    sources: Set<string>,
+    ids: Set<string>,
+  ): void {
     if (
       field.classList.contains(RAW_HIDDEN_CLASS) ||
-      this.shouldSkipRawHide(field)
+      this.shouldSkipRawHide(field) ||
+      !this.isMathControl(field, sources, ids)
     ) {
       return;
     }
-    const value = this.getTextFieldValue(field);
-    if (value && this.parsePayload(value)) {
-      field.classList.add(RAW_HIDDEN_CLASS);
-      field.setAttribute("aria-hidden", "true");
-    }
+    field.classList.add(RAW_HIDDEN_CLASS);
+    field.setAttribute("aria-hidden", "true");
+  }
+
+  private getManagerAnnotationCount(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): number {
+    const list = this.getAnnotationManager(reader)?._annotations;
+    return Array.isArray(list)
+      ? list.length
+      : ((list as { size?: number } | undefined)?.size ?? 0);
   }
 
   /**
@@ -1141,10 +1247,7 @@ export class LatexMathTool {
    * lookups — never a full scan on every mutation batch.
    */
   private readerHasMath(reader: _ZoteroTypes.ReaderInstance<"pdf">): boolean {
-    const list = this.getAnnotationManager(reader)?._annotations;
-    const count = Array.isArray(list)
-      ? list.length
-      : ((list as { size?: number } | undefined)?.size ?? 0);
+    const count = this.getManagerAnnotationCount(reader);
     if (this.mathAnnotationCacheCounts.get(reader) === count) {
       const cached = this.mathAnnotationCache.get(reader);
       if (cached !== undefined) {
@@ -1158,6 +1261,57 @@ export class LatexMathTool {
   }
 
   /**
+   * 数学标注的正文集合 + id 集合。observer 的 hideNewRawMathText 只拿到
+   * 控件节点，用 data-id 精确匹配（真机确认 id 在 `data-id`）；拿不到 id 时
+   * 才退回 value 匹配。数量变化自动重建；comment 内容变化由编辑入口显式失效。
+   */
+  private getMathControlSets(reader: _ZoteroTypes.ReaderInstance<"pdf">): {
+    sources: Set<string>;
+    ids: Set<string>;
+  } {
+    const count = this.getManagerAnnotationCount(reader);
+    const cached = this.mathControlCache.get(reader);
+    if (cached && cached.count === count) {
+      return cached;
+    }
+
+    const sources = new Set<string>();
+    const ids = new Set<string>();
+    for (const annotation of this.getMathAnnotations(reader)) {
+      ids.add(annotation.id);
+      const source = this.getMathContent(annotation).trim();
+      if (source) {
+        sources.add(source);
+      }
+    }
+    const sets = { count, sources, ids };
+    this.mathControlCache.set(reader, sets);
+    return sets;
+  }
+
+  private getAnnotationControlId(element: Element): string | undefined {
+    const id = (element as HTMLElement).dataset?.id;
+    return id || undefined;
+  }
+
+  /**
+   * 是否是一条数学标注对应的原文控件。有 data-id 时以 id 为准（防止原生标注
+   * 恰好与某条数学标注正文相同时被误隐藏）；没有 data-id 才退回 value 匹配。
+   */
+  private isMathControl(
+    element: Element,
+    sources: Set<string>,
+    ids: Set<string>,
+  ): boolean {
+    const value = this.getTextFieldValue(element);
+    if (!value) {
+      return false;
+    }
+    const id = this.getAnnotationControlId(element);
+    return id ? ids.has(id) : sources.has(value.trim());
+  }
+
+  /**
    * 使 `readerHasMath` 的缓存失效。失效键（标注数量）在"编辑标注 comment
    * 使数学↔非数学变化而数量不变"时不会变化，缓存会返回陈旧值，导致 zoom
    * 重建标注层时原始 `[[math:…]]` 文本闪一帧。所有修改标注内容的入口
@@ -1168,6 +1322,7 @@ export class LatexMathTool {
   ): void {
     this.mathAnnotationCache.delete(reader);
     this.mathAnnotationCacheCounts.delete(reader);
+    this.mathControlCache.delete(reader);
   }
 
   private createMutationObserverOptions(win: Window): MutationObserverInit {
@@ -1218,7 +1373,7 @@ export class LatexMathTool {
         target.closest(`.${PAGE_OVERLAY_CLASS}`) ||
         target.closest(`.${MANAGER_RENDER_CLASS}`) ||
         target.closest(".zotero-latex-math-modal") ||
-        target.closest(".zotero-latex-math-editor-frame"),
+        target.closest(`.${EDITOR_FRAME_CLASS}`),
       );
     });
   }
@@ -1230,6 +1385,18 @@ export class LatexMathTool {
     ].filter((doc): doc is Document => Boolean(doc?.body));
 
     return [...new Set(docs)].filter((doc) => {
+      // 编辑器 iframe 是临时 UI，不是 PDF 页面文档。排除它，避免每次打开
+      // 编辑器都被 refreshObservedDocuments 观察并留下一个永不释放的
+      // MutationObserver/Document 引用（长时间会话会随编辑次数累积）。
+      try {
+        const frame = doc.defaultView?.frameElement;
+        if (frame?.classList?.contains(EDITOR_FRAME_CLASS)) {
+          return false;
+        }
+      } catch {
+        // frameElement 跨 realm 访问失败时按普通文档继续走原有过滤。
+      }
+
       try {
         return !Components.utils.isDeadWrapper(doc.defaultView ?? doc);
       } catch {
@@ -1241,6 +1408,16 @@ export class LatexMathTool {
   private renderMathAnnotations(runtime: ReaderRuntime): void {
     this.refreshObservedDocuments(runtime);
     const docs = this.getPDFPageDocuments(runtime);
+    const annotations = this.getMathAnnotations(runtime.reader);
+    const sources = new Set<string>();
+    const ids = new Set<string>();
+    for (const annotation of annotations) {
+      ids.add(annotation.id);
+      const source = this.getMathContent(annotation).trim();
+      if (source) {
+        sources.add(source);
+      }
+    }
     // 每 doc 只做一次控件扫描，结果同时供 overlay 渲染与原文隐藏/清理使用，
     // 避免每轮渲染对同一文档的 textarea/input 全量扫描两遍（renderManagerOverlays
     // 判断有无数学源一遍 + hideRawMathElements 算 active 集合再一遍）。
@@ -1248,19 +1425,25 @@ export class LatexMathTool {
     // 不会改变 textarea/input 控件的 value。
     const docMathElements = new Map<Document, HTMLElement[]>();
     for (const doc of docs) {
-      docMathElements.set(doc, this.getElementsWithMathText(doc));
+      docMathElements.set(doc, this.getElementsWithMathText(doc, sources, ids));
     }
     const overlayCount = this.renderManagerOverlays(
       runtime,
       docs,
       docMathElements,
+      annotations,
     );
     // overlayCount > 0 走原有隐藏逻辑；无 overlay 但该 reader 被标记为有残留
     // 隐藏（数学标注被改成普通文本）时同样执行清理，否则普通文本会被残留的
     // 透明色遮住。正常路径（有 overlay）不增加任何查询。
     if (overlayCount > 0 || this.staleRawHiddenReaders.has(runtime.reader)) {
       for (const doc of docs) {
-        this.hideRawMathElements(doc, docMathElements.get(doc) ?? []);
+        this.hideRawMathElements(
+          doc,
+          docMathElements.get(doc) ?? [],
+          sources,
+          ids,
+        );
       }
     }
     this.staleRawHiddenReaders.delete(runtime.reader);
@@ -1295,7 +1478,7 @@ export class LatexMathTool {
       return Boolean(
         target &&
         !target.closest(".zotero-latex-math-modal") &&
-        !target.closest(".zotero-latex-math-editor-frame"),
+        !target.closest(`.${EDITOR_FRAME_CLASS}`),
       );
     };
 
@@ -1303,7 +1486,7 @@ export class LatexMathTool {
       event: Event,
       match: {
         annotation: _ZoteroTypes.Reader.Annotation;
-        payload: MathPayload;
+        content: MathContent;
       },
     ) => {
       event.preventDefault();
@@ -1311,15 +1494,20 @@ export class LatexMathTool {
       (
         event as Event & { stopImmediatePropagation?: () => void }
       ).stopImmediatePropagation?.();
+      const baseFontSize = this.getAnnotationFontSize(match.annotation);
       void this.openEditorInDocument(this.getEditorDocument(runtime), {
-        initial: { latex: match.payload.latex, mode: match.payload.mode },
+        initialSource: this.getEditorSource(match.annotation, match.content),
+        isNew: false,
+        baseFontSize,
         title: getString("math-editor-edit-title"),
-        onSave: async (payload) => {
+        onSave: async (source, renderedSize) => {
           await this.updateManagerAnnotationByID(
             runtime.reader,
             match.annotation.id,
-            payload,
+            source,
             doc,
+            baseFontSize,
+            renderedSize,
           );
           this.scheduleRender(runtime.reader, true);
         },
@@ -1469,6 +1657,31 @@ export class LatexMathTool {
     );
   }
 
+  /**
+   * 编辑器里显示的源码：旧前缀标注迁移成新语法，混合内容直接显示原文。
+   * 取消编辑不会写回，因此这里的迁移只在用户点保存后生效。
+   */
+  private getEditorSource(
+    annotation: _ZoteroTypes.Reader.Annotation,
+    content: MathContent,
+  ): string {
+    if (content.kind === "rich") {
+      return this.getMathContent(annotation);
+    }
+    return this.legacyToRichSource(content);
+  }
+
+  private legacyToRichSource(content: {
+    latex: string;
+    mode: MathMode;
+  }): string {
+    // 旧行内公式若含换行，用块级语法迁移，避免新解析器把行内公式当成未闭合。
+    if (content.mode === "display" || content.latex.includes("\n")) {
+      return `$$\n${content.latex}\n$$`;
+    }
+    return "$" + content.latex + "$";
+  }
+
   private findMathAnnotationAtPoint(
     runtime: ReaderRuntime,
     doc: Document,
@@ -1476,7 +1689,7 @@ export class LatexMathTool {
   ):
     | {
         annotation: _ZoteroTypes.Reader.Annotation;
-        payload: MathPayload;
+        content: MathContent;
       }
     | undefined {
     const target = event.target as Element | null;
@@ -1505,9 +1718,9 @@ export class LatexMathTool {
 
     for (const annotation of this.getMathAnnotations(runtime.reader)) {
       const position = this.getPDFPosition(annotation);
-      const payload = this.parsePayload(this.getMathContent(annotation));
+      const content = this.parseAnnotationMath(annotation);
       const rect = position?.rects?.[0];
-      if (!position || !payload || !rect || position.pageIndex !== pageIndex) {
+      if (!position || !content || !rect || position.pageIndex !== pageIndex) {
         continue;
       }
 
@@ -1522,26 +1735,31 @@ export class LatexMathTool {
         y >= viewportRect.top - tolerance &&
         y <= viewportRect.top + viewportRect.height + tolerance
       ) {
-        return { annotation, payload };
+        return { annotation, content };
       }
     }
 
     return undefined;
   }
 
-  private getElementsWithMathText(doc: Document): HTMLElement[] {
+  private getElementsWithMathText(
+    doc: Document,
+    sources: Set<string>,
+    ids: Set<string>,
+  ): HTMLElement[] {
     // The raw math source always lives in a free-text annotation control
     // (Zotero renders text annotations as
     //   <textarea class="textAnnotation" data-id="<annotationID>">…</textarea>
-    // with the `[[math:…]]` text in the control's value; confirmed on-device).
+    // with the annotation comment in the control's value; confirmed on-device).
     // Scan only those controls — a full-document TreeWalker over every text
     // node in the viewer was a hot-path cost on each render pass.
+    // Match by data-id when present; fall back to value matching only when the
+    // control has no id. Untagged native text annotations are never touched.
     const elements = new Set<HTMLElement>();
     for (const field of [
       ...doc.querySelectorAll<HTMLElement>("textarea,input"),
     ]) {
-      const value = this.getTextFieldValue(field);
-      if (value && this.parsePayload(value)) {
+      if (this.isMathControl(field, sources, ids)) {
         elements.add(field);
       }
     }
@@ -1551,10 +1769,12 @@ export class LatexMathTool {
   private hideRawMathElements(
     doc: Document,
     mathElements: HTMLElement[],
+    sources: Set<string>,
+    ids: Set<string>,
   ): void {
     // mathElements 是 renderMathAnnotations 为本 doc 预扫描的数学控件集合，
-    // 与 hideRawMathElements 自行扫描 getElementsWithMathText(doc) 的结果一致
-    // （两次调用之间没有会影响控件 value 的 DOM 变更），行为完全等价。
+    // 与 hideRawMathElements 自行扫描 getElementsWithMathText(doc, sources, ids)
+    // 的结果一致（两次调用之间没有会影响控件 value 的 DOM 变更），行为完全等价。
     const activeElements = new Set(mathElements);
 
     for (const element of [
@@ -1562,7 +1782,7 @@ export class LatexMathTool {
     ]) {
       if (
         !activeElements.has(element) ||
-        !this.extractPayloadFromElement(element)
+        !this.isMathControl(element, sources, ids)
       ) {
         element.classList.remove(RAW_HIDDEN_CLASS);
         element.removeAttribute("aria-hidden");
@@ -1583,7 +1803,7 @@ export class LatexMathTool {
       element.closest(`.${MANAGER_RENDER_CLASS}`) ||
       element.closest(`.${PAGE_OVERLAY_CLASS}`) ||
       element.closest(".zotero-latex-math-modal") ||
-      element.closest(".zotero-latex-math-editor-frame")
+      element.closest(`.${EDITOR_FRAME_CLASS}`)
     ) {
       return true;
     }
@@ -1599,8 +1819,8 @@ export class LatexMathTool {
     runtime: ReaderRuntime,
     docs: Document[],
     docMathElements: Map<Document, HTMLElement[]>,
+    annotations: _ZoteroTypes.Reader.Annotation[],
   ): number {
-    const annotations = this.getMathAnnotations(runtime.reader);
     let rendered = 0;
 
     for (const doc of docs) {
@@ -1624,9 +1844,9 @@ export class LatexMathTool {
 
       for (const annotation of annotations) {
         const position = this.getPDFPosition(annotation);
-        const payload = this.parsePayload(this.getMathContent(annotation));
+        const content = this.parseAnnotationMath(annotation);
         const rect = position?.rects?.[0];
-        if (!payload || !position || !rect) {
+        if (!content || !position || !rect) {
           continue;
         }
 
@@ -1651,7 +1871,7 @@ export class LatexMathTool {
           runtime,
           element,
           annotation,
-          payload,
+          content,
           viewportRect,
         );
         rendered += 1;
@@ -1697,10 +1917,41 @@ export class LatexMathTool {
   ): _ZoteroTypes.Reader.Annotation[] {
     const manager = this.getAnnotationManager(reader);
     return this.getManagerAnnotations(manager).filter(
-      (annotation) =>
-        annotation.type === "text" &&
-        Boolean(this.parsePayload(this.getMathContent(annotation))),
+      (annotation) => this.parseAnnotationMath(annotation) !== null,
     );
+  }
+
+  /**
+   * updateAnnotations 的入参可能是 partial；按 id 从 manager 当前列表取回合并后的
+   * 完整标注，供渲染调度/元数据判断使用。
+   */
+  private resolveAnnotationsById(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    annotations: readonly _ZoteroTypes.Reader.Annotation[],
+  ): _ZoteroTypes.Reader.Annotation[] {
+    if (!annotations.length) {
+      return [];
+    }
+
+    const manager = this.getAnnotationManager(reader);
+    if (!manager) {
+      return [];
+    }
+
+    const byId = new Map(
+      this.getManagerAnnotations(manager).map((annotation) => [
+        annotation.id,
+        annotation,
+      ]),
+    );
+    const resolved: _ZoteroTypes.Reader.Annotation[] = [];
+    for (const annotation of annotations) {
+      const full = annotation.id ? byId.get(annotation.id) : undefined;
+      if (full) {
+        resolved.push(full);
+      }
+    }
+    return resolved;
   }
 
   /**
@@ -1806,42 +2057,186 @@ export class LatexMathTool {
   }
 
   private renderManagerOverlayElement(
-    _runtime: ReaderRuntime,
+    runtime: ReaderRuntime,
     element: HTMLElement,
     annotation: _ZoteroTypes.Reader.Annotation,
-    payload: MathPayload,
+    content: MathContent,
     rect: ViewportRect,
   ): void {
-    const currentSource = element.dataset.mathSource;
-    const currentMode = element.dataset.mathMode;
+    const source = this.getMathContent(annotation).trim();
+    // 纯公式（没有普通文本）继续走旧公式的 fit-content 路径：KaTeX 天然尺寸
+    // 缩放填满 rect，避免宽公式在 rich 布局里横向溢出。只有文本+公式混排
+    // 才走 rich 布局。
+    const formula = this.getSingleFormula(content);
+    const isRichLayout = !formula;
+    const shape = formula ? "formula" : "rich";
+    const fontSize = this.getAnnotationFontSize(annotation);
+    const previousSource = element.dataset.mathSource;
+    const previousKind = element.dataset.mathKind;
+    const previousShape = element.dataset.mathShape;
 
     this.setStyleIfChanged(element, "left", `${rect.left}px`);
     this.setStyleIfChanged(element, "top", `${rect.top}px`);
     this.setStyleIfChanged(element, "width", `${Math.max(rect.width, 24)}px`);
     this.setStyleIfChanged(element, "height", `${Math.max(rect.height, 18)}px`);
     this.setStyleIfChanged(element, "color", annotation.color || "#111111");
+    this.toggleClassIfChanged(element, "is-rich", isRichLayout);
     this.toggleClassIfChanged(
       element,
       "is-display",
-      payload.mode === "display",
+      formula?.mode === "display",
     );
-    this.setDatasetIfChanged(element, "mathMode", payload.mode);
-    this.setDatasetIfChanged(element, "mathSource", payload.latex);
+    this.setDatasetIfChanged(
+      element,
+      "mathMode",
+      formula ? formula.mode : "rich",
+    );
+    this.setDatasetIfChanged(element, "mathSource", source);
+    this.setDatasetIfChanged(element, "mathKind", content.kind);
+    this.setDatasetIfChanged(element, "mathShape", shape);
 
     if (
-      currentSource !== payload.latex ||
-      currentMode !== payload.mode ||
-      !element.querySelector(`:scope > .${FIT_CONTENT_CLASS}`)
+      previousSource !== source ||
+      previousKind !== content.kind ||
+      previousShape !== shape ||
+      !element.firstElementChild
     ) {
-      element.innerHTML = `<span class="${FIT_CONTENT_CLASS}">${this.renderLatex(
-        payload.latex,
-        payload.mode,
-      )}</span>`;
+      element.innerHTML = formula
+        ? `<span class="${FIT_CONTENT_CLASS}">${this.renderLatex(
+            formula.latex,
+            formula.mode,
+          )}</span>`
+        : `<div class="${RICH_CONTENT_CLASS}">${this.renderRichContentHtml(
+            content,
+          )}</div>`;
     }
-    this.fitFormulaToOverlay(element, rect);
+
+    if (formula) {
+      this.fitFormulaToOverlay(element, rect);
+    } else {
+      this.fitRichContentToOverlay(runtime, element, rect, fontSize);
+    }
     // Editing is handled by the document-level double-click handler
     // (installRenderedFormulaDblClickHandler); this element has
     // pointer-events: none, so no element-level listener would ever fire.
+  }
+
+  /**
+   * 只有一个公式、没有任何普通文本时返回该公式；legacy 标注也算纯公式。
+   * 其余情况返回 undefined，走 rich 布局。
+   */
+  private getSingleFormula(
+    content: MathContent,
+  ): { latex: string; mode: MathMode } | undefined {
+    if (content.kind === "legacy") {
+      return { latex: content.latex, mode: content.mode };
+    }
+
+    const nodes = content.document.nodes.filter(
+      (node) => node.type !== "text" || node.value.trim().length > 0,
+    );
+    if (nodes.length !== 1) {
+      return undefined;
+    }
+    const node = nodes[0];
+    if (node.type === "inline-math") {
+      return { latex: node.latex, mode: "inline" };
+    }
+    if (node.type === "display-math") {
+      return { latex: node.latex, mode: "display" };
+    }
+    return undefined;
+  }
+
+  private renderRichContentHtml(content: MathContent): string {
+    if (content.kind !== "rich") {
+      return "";
+    }
+    return renderRichDocument(content.document, (latex, display) =>
+      this.renderLatex(latex, display ? "display" : "inline"),
+    );
+  }
+
+  /**
+   * 混合内容按"基准字号 + PDF 宽度"排版，再整体按当前缩放 transform。
+   * 正常插件路径下 rect 高度就是量出来的高度，scale 恰好等于缩放；只有
+   * 侧栏改内容导致高度超出 rect 时才整体缩小兜底。
+   */
+  private fitRichContentToOverlay(
+    runtime: ReaderRuntime,
+    element: HTMLElement,
+    rect: ViewportRect,
+    fontSize: number,
+  ): void {
+    const content = element.querySelector<HTMLElement>(
+      `:scope > .${RICH_CONTENT_CLASS}`,
+    );
+    if (!content) {
+      return;
+    }
+
+    const zoom = rect.scale ?? this.getCurrentScale(runtime) ?? 1;
+    // 保存时宽度取整（Math.ceil），这里也取整回去，避免 rect 换算的浮点误差
+    // 让换行位置/高缓存键在每次渲染时抖动。
+    const baseWidth = Math.max(
+      Math.round(rect.width / Math.max(zoom, 0.01)),
+      1,
+    );
+    const naturalHeight = this.measureRichContentHeight(
+      content,
+      baseWidth,
+      fontSize,
+    );
+    if (!naturalHeight) {
+      return;
+    }
+
+    let scale = zoom;
+    const availableHeight = Math.max(rect.height, 1);
+    if (naturalHeight * scale > availableHeight) {
+      scale = availableHeight / naturalHeight;
+    }
+    scale = this.clamp(scale, 0.1, 12);
+
+    this.setStyleIfChanged(content, "width", `${baseWidth}px`);
+    this.setStyleIfChanged(content, "font-size", `${fontSize}px`);
+    this.setStyleIfChanged(content, "line-height", `${RICH_LINE_HEIGHT}`);
+    this.setStyleIfChanged(content, "transform-origin", "left top");
+    this.setStyleIfChanged(content, "transform", `scale(${scale})`);
+    this.setStyleIfChanged(content, "left", "0px");
+    this.setStyleIfChanged(content, "top", "0px");
+  }
+
+  private measureRichContentHeight(
+    content: HTMLElement,
+    width: number,
+    fontSize: number,
+  ): number | undefined {
+    const ownerDoc = content.ownerDocument;
+    const fontsReady =
+      !ownerDoc || !ownerDoc.fonts || ownerDoc.fonts.status === "loaded";
+    const cached = this.richContentSizeCache.get(content);
+    if (
+      cached &&
+      fontsReady &&
+      cached.width === width &&
+      cached.fontSize === fontSize
+    ) {
+      return cached.height;
+    }
+
+    content.style.width = `${width}px`;
+    content.style.fontSize = `${fontSize}px`;
+    content.style.lineHeight = `${RICH_LINE_HEIGHT}`;
+    content.style.transform = "";
+    const height = content.offsetHeight;
+    if (!height) {
+      return undefined;
+    }
+    if (fontsReady) {
+      this.richContentSizeCache.set(content, { width, height, fontSize });
+    }
+    return height;
   }
 
   private fitFormulaToOverlay(element: HTMLElement, rect: ViewportRect): void {
@@ -1974,6 +2369,10 @@ export class LatexMathTool {
       top,
       width: right - left,
       height: bottom - top,
+      scale:
+        typeof viewport?.scale === "number" && viewport.scale > 0
+          ? viewport.scale
+          : undefined,
     };
   }
 
@@ -1996,6 +2395,7 @@ export class LatexMathTool {
     }
 
     const docs = this.getRuntimeDocuments(runtime);
+    const { sources, ids } = this.getMathControlSets(runtime.reader);
     const summary = {
       ...stats,
       mathAnnotationCount: mathAnnotations.length,
@@ -2017,19 +2417,22 @@ export class LatexMathTool {
         comment: (annotation.comment ?? "").slice(0, 64),
         textPrefix: this.getMathContent(annotation).slice(0, 32),
       })),
-      docs: docs.map((doc, index) => ({
-        index,
-        url: doc.location?.href,
-        pages: doc.querySelectorAll(".page").length,
-        annotationLayers: doc.querySelectorAll(".annotationLayer").length,
-        editorLayers: doc.querySelectorAll(".annotationEditorLayer").length,
-        mathTextNodes: this.getElementsWithMathText(doc).length,
-        managerOverlays: doc.querySelectorAll(`.${MANAGER_RENDER_CLASS}`)
-          .length,
-        sampleMathElements: this.getElementsWithMathText(doc)
-          .slice(0, 3)
-          .map((element) => this.describeElement(element)),
-      })),
+      docs: docs.map((doc, index) => {
+        const mathElements = this.getElementsWithMathText(doc, sources, ids);
+        return {
+          index,
+          url: doc.location?.href,
+          pages: doc.querySelectorAll(".page").length,
+          annotationLayers: doc.querySelectorAll(".annotationLayer").length,
+          editorLayers: doc.querySelectorAll(".annotationEditorLayer").length,
+          mathTextNodes: mathElements.length,
+          managerOverlays: doc.querySelectorAll(`.${MANAGER_RENDER_CLASS}`)
+            .length,
+          sampleMathElements: mathElements
+            .slice(0, 3)
+            .map((element) => this.describeElement(element)),
+        };
+      }),
     };
     const signature = JSON.stringify(summary);
     if (this.lastRenderDiagnostics.get(runtime.reader) === signature) {
@@ -2120,8 +2523,13 @@ export class LatexMathTool {
     doc: Document,
     options: {
       title: string;
-      initial: { latex: string; mode: MathMode };
-      onSave: (payload: MathPayload) => Promise<void> | void;
+      initialSource: string;
+      isNew: boolean;
+      baseFontSize: number;
+      onSave: (
+        source: string,
+        renderedSize?: FormulaSize,
+      ) => Promise<void> | void;
     },
   ): Promise<void> {
     const editorHost = this.createEditorHost(doc);
@@ -2149,23 +2557,12 @@ export class LatexMathTool {
 
     const input = create("textarea");
     input.className = "zotero-latex-math-input";
-    input.value = options.initial.latex;
-    input.placeholder = "\\frac{a}{b} = c";
-    input.rows = 5;
+    input.value = options.initialSource;
+    input.placeholder = getString("math-editor-placeholder");
+    input.rows = 7;
 
     const preview = create("div");
     preview.className = "zotero-latex-math-preview";
-
-    const modeLabel = create("label");
-    modeLabel.className = "zotero-latex-math-mode";
-
-    const displayMode = create("input");
-    displayMode.type = "checkbox";
-    displayMode.checked = options.initial.mode === "display";
-
-    const modeText = create("span");
-    modeText.textContent = getString("math-editor-display-mode");
-    modeLabel.append(displayMode, modeText);
 
     const actions = create("div");
     actions.className = "zotero-latex-math-actions";
@@ -2177,12 +2574,12 @@ export class LatexMathTool {
     const save = create("button");
     save.type = "button";
     save.className = "primary";
-    save.textContent = options.initial.latex
-      ? getString("math-editor-save")
-      : getString("math-editor-insert");
+    save.textContent = options.isNew
+      ? getString("math-editor-insert")
+      : getString("math-editor-save");
 
     actions.append(cancel, save);
-    panel.append(title, input, preview, modeLabel, actions);
+    panel.append(title, input, preview, actions);
     overlay.append(panel);
     editorDoc.documentElement?.appendChild(overlay);
 
@@ -2195,31 +2592,81 @@ export class LatexMathTool {
       input.addEventListener(eventName, stopShortcutPropagation, true);
     }
 
-    const close = () => editorHost.destroy();
+    const editorWindow = editorDoc.defaultView;
+    let previewTimer: number | undefined;
+    let closed = false;
+    const clearPreviewTimer = () => {
+      if (previewTimer !== undefined) {
+        editorWindow?.clearTimeout(previewTimer);
+        previewTimer = undefined;
+      }
+    };
+    const close = () => {
+      closed = true;
+      clearPreviewTimer();
+      editorHost.destroy();
+    };
+
     const updatePreview = () => {
-      const latex = input.value.trim();
-      const mode: MathMode = displayMode.checked ? "display" : "inline";
-      save.disabled = latex.length === 0;
-      preview.classList.toggle("is-empty", latex.length === 0);
-      preview.innerHTML = latex
-        ? this.renderLatex(latex, mode)
+      const raw = input.value.trim();
+      const source = this.normalizeEditorSource(raw, options.isNew);
+      save.disabled = raw.length === 0;
+      preview.classList.toggle("is-empty", source.length === 0);
+      preview.innerHTML = source
+        ? this.renderEditorPreview(source)
         : getString("math-editor-empty-preview");
     };
 
+    const schedulePreview = () => {
+      if (!editorWindow) {
+        updatePreview();
+        return;
+      }
+      clearPreviewTimer();
+      previewTimer = editorWindow.setTimeout(updatePreview, 100);
+    };
+
+    let saving = false;
     const saveFormula = async () => {
-      const latex = input.value.trim();
-      if (!latex || save.disabled) {
+      if (saving) {
+        return;
+      }
+      const source = this.normalizeEditorSource(
+        input.value.trim(),
+        options.isNew,
+      );
+      if (!source) {
         return;
       }
 
-      const mode: MathMode = displayMode.checked ? "display" : "inline";
-      save.disabled = true;
+      // 先把当前内容渲染到预览，确保 KaTeX 字体已开始加载；接着等字体就绪，
+      // 再在编辑器文档里量尺寸。编辑器文档与最终 overlay 共用同一套 CSS，
+      // 这样量出来的宽度/高度不会受 reader 文档字体尚未加载的影响。
+      saving = true;
       try {
-        await options.onSave(
-          this.encodePayload(latex, mode, this.measureFormulaPreview(preview)),
+        updatePreview();
+        save.disabled = true;
+        // 触发一次布局，让预览里的 KaTeX 字形开始加载，再等字体就绪后测量。
+        preview.getBoundingClientRect();
+        try {
+          await editorDoc.fonts?.ready;
+        } catch {
+          // 字体 API 不可用时退回直接测量。
+        }
+        const renderedSize = this.measureRichSource(
+          editorDoc,
+          source,
+          options.baseFontSize,
         );
+        // 字体等待/测量期间用户可能已经取消（overlay 点击/Cancel）；不要在
+        // 编辑器已销毁后继续创建/更新标注。
+        if (closed) {
+          return;
+        }
+        await options.onSave(source, renderedSize);
         close();
       } catch (error) {
+        saving = false;
         const message = this.stringifyError(error);
         preview.classList.remove("is-empty");
         preview.innerHTML = `<span class="zotero-latex-math-error">${this.escapeHTML(
@@ -2229,8 +2676,12 @@ export class LatexMathTool {
       }
     };
 
-    input.addEventListener("input", updatePreview);
-    displayMode.addEventListener("change", updatePreview);
+    input.addEventListener("input", () => {
+      // 防抖只影响预览；保存按钮的可用状态必须立刻跟上，否则用户输入后
+      // 100ms 内点保存会点在一个 disabled 按钮上。
+      save.disabled = input.value.trim().length === 0;
+      schedulePreview();
+    });
     cancel.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2257,6 +2708,28 @@ export class LatexMathTool {
     input.setSelectionRange(input.value.length, input.value.length);
   }
 
+  /**
+   * 新建时输入不含 `$` 的整段内容按块级公式处理（Σ 仍是公式入口）；
+   * 编辑已有标注则按原样保存，删掉 `$` 就是有意变成普通文本。
+   */
+  private normalizeEditorSource(source: string, isNew: boolean): string {
+    if (!source || !isNew) {
+      return source;
+    }
+    return parseMathContent(source) ? source : `$$\n${source}\n$$`;
+  }
+
+  private renderEditorPreview(source: string): string {
+    const content = parseMathContent(source);
+    if (!content) {
+      return this.escapeHTML(source);
+    }
+    if (content.kind === "legacy") {
+      return this.renderLatex(content.latex, content.mode);
+    }
+    return this.renderRichContentHtml(content);
+  }
+
   private createEditorHost(doc: Document): {
     doc: Document;
     destroy: () => void;
@@ -2265,7 +2738,7 @@ export class LatexMathTool {
       "http://www.w3.org/1999/xhtml",
       "iframe",
     ) as HTMLIFrameElement;
-    frame.className = "zotero-latex-math-editor-frame";
+    frame.className = EDITOR_FRAME_CLASS;
     frame.setAttribute("aria-hidden", "false");
     frame.style.position = "fixed";
     frame.style.inset = "0";
@@ -2303,21 +2776,30 @@ export class LatexMathTool {
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     manager: AnnotationManager,
     location: ClickLocation,
-    payload: MathPayload,
+    source: string,
     doc?: Document,
+    baseFontSize: number = MATH_BASE_FONT_SIZE,
+    renderedSize?: FormulaSize,
   ): Promise<void> {
     if (!manager.addAnnotation) {
       throw new Error("Reader annotation manager is not available");
     }
 
-    const rect =
-      doc && payload.renderedSize
-        ? this.resizeLocationRect(doc, location, payload.renderedSize, reader)
-        : location.rect;
+    const rect = this.getRichAnnotationRect(
+      reader,
+      doc,
+      location,
+      source,
+      baseFontSize,
+      renderedSize,
+    );
 
-    // 只传最小入参：id/tags/日期/作者 由 Zotero 的 addAnnotation 生成补全，
+    // 只传最小入参：id/日期/作者由 Zotero 的 addAnnotation 生成补全，
     // 插件不再手工拼 Zotero 的内部对象格式。正文必须放 comment、text 留空
     // （侧栏编辑只更新 comment，写 text 会读到旧值导致公式不同步）。
+    // 阅读器内部标注 tag 是 { name, color? }；Zotero 保存时 fromJSON 再把
+    // name 转成条目 tag 的 { tag }。传 { tag } 或字符串会因取不到 name 报
+    // "Tag data must contain 'tag' property"（2026-10 真机 + Zotero 源码确认）。
     const rawAnnotation = {
       type: "text",
       color: "#000000",
@@ -2326,13 +2808,14 @@ export class LatexMathTool {
       position: {
         pageIndex: location.pageIndex,
         // fontSize/rotation 不在 PDFPosition 类型内，但 Zotero 的 addAnnotation
-        // 对 text 标注必需（真机验证：去掉会直接报错）。沿用旧路径的值。
-        fontSize: 14,
+        // 对 text 标注必需（真机验证：去掉会直接报错）。
+        fontSize: baseFontSize,
         rotation: 0,
         rects: [rect],
       },
-      comment: payload.encoded,
-    } as Parameters<typeof manager.addAnnotation>[0];
+      comment: source,
+      tags: [{ name: MATH_ANNOTATION_TAG }],
+    } as unknown as Parameters<typeof manager.addAnnotation>[0];
 
     const beforeList = manager._annotations;
     const beforeLength = Array.isArray(beforeList)
@@ -2347,6 +2830,7 @@ export class LatexMathTool {
       );
     }
 
+    this.ensureMathTag(manager, created);
     this.logCreateDiagnostics(reader, manager, {
       annotation,
       created,
@@ -2360,6 +2844,158 @@ export class LatexMathTool {
       beforeLength,
       phase: "post-save",
     });
+  }
+
+  private getRichAnnotationRect(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    doc: Document | undefined,
+    location: ClickLocation,
+    source: string,
+    baseFontSize: number,
+    renderedSize?: FormulaSize,
+  ): number[] {
+    if (!doc) {
+      return location.rect;
+    }
+
+    const size =
+      renderedSize ?? this.measureRichSource(doc, source, baseFontSize);
+    if (!size) {
+      return location.rect;
+    }
+
+    const zoom = this.getDocZoom(doc, reader, location.pageIndex);
+    return this.resizeLocationRect(
+      doc,
+      location,
+      { width: size.width * zoom, height: size.height * zoom },
+      reader,
+    );
+  }
+
+  /**
+   * 按基准字号测量混合内容在 PDF 单位下的自然宽高。
+   *
+   * 与 overlay 共用同一套 CSS/字体；测量只在保存/编辑时发生，不在渲染热路径。
+   * 纯公式沿用旧的 720pt 宽度上限，含普通文本的内容按 320pt 换行。
+   */
+  private measureRichSource(
+    doc: Document,
+    source: string,
+    fontSize: number,
+  ): FormulaSize | undefined {
+    const content = parseMathContent(source);
+    if (!content) {
+      return undefined;
+    }
+    if (content.kind === "legacy") {
+      return this.measureRichSource(
+        doc,
+        this.legacyToRichSource(content),
+        fontSize,
+      );
+    }
+
+    this.injectStyles(doc);
+    const body = doc.body;
+    if (!body) {
+      return undefined;
+    }
+    const measure = doc.createElement("div");
+    measure.className = RICH_MEASURE_CLASS;
+    measure.style.position = "fixed";
+    measure.style.left = "-10000px";
+    measure.style.top = "-10000px";
+    measure.style.visibility = "hidden";
+    measure.style.pointerEvents = "none";
+    measure.style.fontSize = `${fontSize}px`;
+    measure.style.lineHeight = `${RICH_LINE_HEIGHT}`;
+    measure.style.whiteSpace = "pre-wrap";
+    measure.style.width = "max-content";
+    measure.innerHTML = this.renderRichContentHtml(content);
+    body.appendChild(measure);
+
+    try {
+      const naturalWidth = measure.getBoundingClientRect().width;
+      const hasText = content.document.nodes.some(
+        (node) => node.type === "text" && node.value.trim().length > 0,
+      );
+      const maxWidth = hasText ? RICH_TEXT_MAX_WIDTH : RICH_FORMULA_MAX_WIDTH;
+      const width = this.clamp(
+        Math.ceil(naturalWidth),
+        RICH_MIN_WIDTH,
+        maxWidth,
+      );
+      measure.style.width = `${width}px`;
+      const height = measure.getBoundingClientRect().height;
+      if (!height) {
+        return undefined;
+      }
+      return {
+        width,
+        height: Math.max(Math.ceil(height), RICH_MIN_HEIGHT),
+      };
+    } finally {
+      measure.remove();
+    }
+  }
+
+  private ensureMathTag(
+    manager: AnnotationManager,
+    annotation: _ZoteroTypes.Reader.Annotation,
+  ): void {
+    const rawTags = annotation.tags as unknown;
+    const existingTags = Array.isArray(rawTags)
+      ? rawTags
+      : typeof rawTags === "string" || (rawTags && typeof rawTags === "object")
+        ? [rawTags]
+        : [];
+
+    // 阅读器内部标注 tag 是 { name, color? }；Zotero.Annotations.fromJSON 会用
+    // t.name 生成条目 tag 的 { tag }。所以这里必须写 name，写 { tag } 或字符串
+    // 会在保存时报 "Tag data must contain 'tag' property"。
+    const normalizedTags = existingTags.map((tag) => {
+      if (typeof tag === "string") {
+        return { name: tag };
+      }
+      if (tag && typeof tag === "object") {
+        const record = tag as { name?: unknown; tag?: unknown };
+        if (typeof record.name === "string") {
+          return tag;
+        }
+        if (typeof record.tag === "string") {
+          return { name: record.tag };
+        }
+      }
+      return tag;
+    });
+
+    const hasTag = normalizedTags.some(
+      (tag) =>
+        tag !== null &&
+        typeof tag === "object" &&
+        (tag as { name?: unknown }).name === MATH_ANNOTATION_TAG,
+    );
+    const tags = hasTag
+      ? normalizedTags
+      : [...normalizedTags, { name: MATH_ANNOTATION_TAG }];
+
+    (annotation as { tags?: unknown }).tags = this.cloneIntoManagerRealm(
+      manager,
+      tags,
+    );
+  }
+
+  private getDocZoom(
+    doc: Document,
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    pageIndex: number,
+  ): number {
+    const viewport =
+      this.getPDFViewportFromWindow(doc.defaultView, pageIndex) ??
+      this.getPDFViewportFromReader(reader, pageIndex);
+    const scale = viewport?.scale;
+    return typeof scale === "number" && scale > 0 ? scale : 1;
   }
 
   /**
@@ -2436,25 +3072,36 @@ export class LatexMathTool {
   private async updateManagerAnnotation(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     annotation: _ZoteroTypes.Reader.Annotation,
-    payload: MathPayload,
+    source: string,
     doc?: Document,
+    baseFontSize: number = this.getAnnotationFontSize(annotation),
+    renderedSize?: FormulaSize,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     if (!manager) {
       throw new Error("Reader annotation manager is not available");
     }
 
-    annotation.text = undefined;
-    annotation.comment = payload.encoded;
-    if (doc && payload.renderedSize) {
-      this.resizeAnnotationRect(
-        reader,
-        manager,
-        annotation,
-        doc,
-        payload.renderedSize,
-      );
+    const content = parseMathContent(source);
+    if (content) {
+      this.ensureMathTag(manager, annotation);
     }
+    annotation.text = undefined;
+    annotation.comment = source;
+
+    if (doc && content) {
+      const size =
+        renderedSize ?? this.measureRichSource(doc, source, baseFontSize);
+      const position = this.getPDFPosition(annotation);
+      if (size && position) {
+        const zoom = this.getDocZoom(doc, reader, position.pageIndex);
+        this.resizeAnnotationRect(reader, manager, annotation, doc, {
+          width: size.width * zoom,
+          height: size.height * zoom,
+        });
+      }
+    }
+
     annotation.dateModified = new Date().toISOString();
     manager.updateAnnotations?.(
       this.replaceManagedAnnotation(manager, annotation),
@@ -2465,8 +3112,10 @@ export class LatexMathTool {
   private async updateManagerAnnotationByID(
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
     annotationID: string,
-    payload: MathPayload,
+    source: string,
     doc?: Document,
+    baseFontSize?: number,
+    renderedSize?: FormulaSize,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     const annotation =
@@ -2478,7 +3127,14 @@ export class LatexMathTool {
       throw new Error("Unable to resolve the underlying Zotero annotation");
     }
 
-    await this.updateManagerAnnotation(reader, annotation, payload, doc);
+    await this.updateManagerAnnotation(
+      reader,
+      annotation,
+      source,
+      doc,
+      baseFontSize,
+      renderedSize,
+    );
   }
 
   private replaceManagedAnnotation(
@@ -2692,80 +3348,6 @@ export class LatexMathTool {
     return (element as HTMLInputElement | HTMLTextAreaElement).value;
   }
 
-  private extractPayloadFromElement(element: HTMLElement): MathPayload | null {
-    const sourceText =
-      element.getAttribute("data-math-encoded") || this.getSourceText(element);
-    return this.parsePayload(sourceText);
-  }
-
-  private parsePayload(text: string): MathPayload | null {
-    const trimmed = text.trim();
-    const displayIndex = trimmed.indexOf(DISPLAY_PREFIX);
-    const inlineIndex = trimmed.indexOf(INLINE_PREFIX);
-    if (displayIndex >= 0) {
-      return this.encodePayload(
-        trimmed.slice(displayIndex + DISPLAY_PREFIX.length).trim(),
-        "display",
-      );
-    }
-    if (inlineIndex >= 0) {
-      return this.encodePayload(
-        trimmed.slice(inlineIndex + INLINE_PREFIX.length).trim(),
-        "inline",
-      );
-    }
-    return null;
-  }
-
-  private encodePayload(
-    latex: string,
-    mode: MathMode,
-    renderedSize?: FormulaSize,
-  ): MathPayload {
-    const prefix = mode === "display" ? DISPLAY_PREFIX : INLINE_PREFIX;
-    return {
-      mode,
-      latex,
-      encoded: `${prefix} ${latex}`,
-      renderedSize,
-    };
-  }
-
-  private measureFormulaPreview(preview: HTMLElement): FormulaSize | undefined {
-    const html = String(preview.innerHTML);
-    if (!html.trim()) {
-      return undefined;
-    }
-
-    const doc = preview.ownerDocument;
-    if (!doc?.body) {
-      return undefined;
-    }
-
-    const measure = doc.createElement("div");
-    measure.className = "zotero-latex-math-measure";
-    measure.innerHTML = html;
-    measure.style.position = "fixed";
-    measure.style.left = "-10000px";
-    measure.style.top = "-10000px";
-    measure.style.display = "inline-block";
-    measure.style.width = "max-content";
-    measure.style.height = "max-content";
-    measure.style.visibility = "hidden";
-    doc.body.appendChild(measure);
-
-    const rect = measure.getBoundingClientRect();
-    measure.remove();
-    if (!rect.width || !rect.height) {
-      return undefined;
-    }
-
-    return {
-      width: this.clamp(Math.ceil(rect.width + 16), 36, 720),
-      height: this.clamp(Math.ceil(rect.height + 10), 24, 260),
-    };
-  }
-
   private resizeLocationRect(
     doc: Document,
     location: ClickLocation,
@@ -2863,8 +3445,15 @@ export class LatexMathTool {
   }
 
   private renderLatex(latex: string, mode: MathMode): string {
+    const cacheKey = `${mode}\u0000${latex}`;
+    const cached = this.katexHtmlCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    let html: string;
     try {
-      return renderToString(latex, {
+      html = renderToString(latex, {
         displayMode: mode === "display",
         throwOnError: false,
         strict: "ignore",
@@ -2874,10 +3463,16 @@ export class LatexMathTool {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "KaTeX render failed";
-      return `<span class="zotero-latex-math-error">${this.escapeHTML(
+      html = `<span class="zotero-latex-math-error">${this.escapeHTML(
         message,
       )}</span>`;
     }
+
+    if (this.katexHtmlCache.size >= 200) {
+      this.katexHtmlCache.clear();
+    }
+    this.katexHtmlCache.set(cacheKey, html);
+    return html;
   }
 
   private injectStyles(doc: Document): void {

@@ -44,6 +44,9 @@ export default defineConfig({
   },
 
   test: {
+    // 只让 Zotero 集成测试（需要 Zotero 二进制）跑 test/integration；
+    // test/unit 是纯 Node 单测，用 `npm run test:rich-text` 单独跑。
+    entries: ["test/integration"],
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
   },
 

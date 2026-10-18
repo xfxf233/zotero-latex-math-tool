@@ -3,9 +3,10 @@
 > 目标：这个插件只做一件小事，不应拖慢 Zotero 本体。
 > 本文记录渲染热路径的现状、已完成的优化（简述）与剩余可优化项。
 > 渲染链路四方法（`renderMathAnnotations`/`renderManagerOverlays`/`hideRawMathElements`/
-> `getElementsWithMathText`）自提交 df1bcac 起 DOM 结构假设未变；2026-08 在
-> `renderManagerOverlays`/`hideRawMathElements` 之间复用了同一份控件扫描结果
-> （见"已完成"末条，真机回归通过）。
+> `getElementsWithMathText`）在 2026-10 混合文本改造中改为传 annotations/sources/ids，
+> 隐藏匹配改为 **data-id 优先、value 回退**；渲染正常路径不变。功能与几何见
+> [rich-text-spec.md](rich-text-spec.md)，Zotero 运行时事实见
+> [zotero-notes.md](zotero-notes.md)。
 
 ## 一、渲染热路径（现状）
 
@@ -52,6 +53,22 @@ renderMathAnnotations
   `renderManagerOverlays`（判断有无数学源）与 `hideRawMathElements`（算 active 集合）使用，
   消除每轮渲染对同一文档 textarea/input 的全量扫描两遍。行为严格等价（两步之间 overlay
   增删不影响控件 value）。真机验证插入/编辑/翻页/缩放/侧栏改普通文本均正常。
+
+## 二点五、混合文本改造（2026-10，feat/rich-text-math）
+
+- 识别先看 `mathtool` tag / 旧前缀，**普通文本标注不解析 comment**；解析结果按 comment 缓存
+  （上限 200），KaTeX HTML 按 `(mode, latex)` 缓存（上限 200）。
+- 原文控件匹配改为 `data-id`（标注 id）优先、无 id 才回退 value；sources/ids 集合按标注数量
+  缓存，observer 热路径不再解析所有标注。
+- rich overlay 只在 source/kind 变化时重建 innerHTML；稳态只更新 `transform` 和 rect 坐标。
+  `offsetHeight` 按"内容元素 + 基准宽度 + 字号"缓存，且 `fonts.status === "loaded"` 才缓存。
+- 缩放不重排：内容在 PDF 单位排版（宽度 = rect 宽 / zoom），再整体 `scale(zoom)`。
+- 编辑器预览输入防抖 100ms；保存时在编辑器 iframe 里渲染 → 强制布局 → `fonts.ready` 后测尺寸，
+  避免 reader 文档字体未加载导致 rect 偏差。
+- **编辑器 iframe 从 `getRuntimeDocuments` 排除**（`frameElement` 的 editor-frame 类）：
+  临时 UI 不应被 `refreshObservedDocuments` 观察，否则每次打开编辑器都可能留下一个
+  不释放的 MutationObserver/Document 引用。
+- **待做**：侧栏编辑数学标注后按当前宽度重算高度、写回 rect（当前靠 overlay 整体缩小兜底）。
 
 ## 三、剩余可优化项（按优先级）
 

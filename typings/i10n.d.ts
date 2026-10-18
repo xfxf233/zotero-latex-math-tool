@@ -4,11 +4,11 @@
 // @ts-nocheck
 export type FluentMessageId =
   | 'math-editor-cancel'
-  | 'math-editor-display-mode'
   | 'math-editor-edit-title'
   | 'math-editor-empty-preview'
   | 'math-editor-insert'
   | 'math-editor-insert-title'
+  | 'math-editor-placeholder'
   | 'math-editor-save'
   | 'math-tool-activate-error'
   | 'math-tool-insert-tooltip';

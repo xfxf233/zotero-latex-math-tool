@@ -4,6 +4,16 @@
 // @ts-nocheck
 export type FluentMessageId =
   | 'math-editor-cancel'
+  | 'math-editor-color-black'
+  | 'math-editor-color-blue'
+  | 'math-editor-color-gray'
+  | 'math-editor-color-green'
+  | 'math-editor-color-label'
+  | 'math-editor-color-magenta'
+  | 'math-editor-color-orange'
+  | 'math-editor-color-purple'
+  | 'math-editor-color-red'
+  | 'math-editor-color-yellow'
   | 'math-editor-edit-title'
   | 'math-editor-empty-preview'
   | 'math-editor-insert'

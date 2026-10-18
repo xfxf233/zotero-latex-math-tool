@@ -154,7 +154,7 @@
   width: min(680px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   display: grid;
-  grid-template-rows: auto minmax(96px, auto) minmax(112px, 1fr) auto;
+  grid-template-rows: auto minmax(96px, auto) auto minmax(112px, 1fr) auto;
   gap: 12px;
   padding: 18px;
   overflow: auto;
@@ -192,6 +192,42 @@
 .zotero-latex-math-input:focus {
   border-color: #2f6fbd;
   outline: 2px solid rgba(47, 111, 189, 0.25);
+}
+
+.zotero-latex-math-colors {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.zotero-latex-math-color-label {
+  margin-right: 2px;
+  color: #68707d;
+  font-size: 13px;
+}
+
+.zotero-latex-math-color-swatch {
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+}
+
+.zotero-latex-math-color-swatch[aria-pressed="true"] {
+  border-color: #2f6fbd;
+  box-shadow:
+    0 0 0 2px rgba(47, 111, 189, 0.28),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+
+.zotero-latex-math-color-swatch:focus-visible {
+  outline: 2px solid #2f6fbd;
+  outline-offset: 1px;
 }
 
 .zotero-latex-math-preview {
@@ -277,5 +313,21 @@
     border-color: #5f6875;
     background: #2c323a;
     color: #f5f7fa;
+  }
+
+  .zotero-latex-math-color-label {
+    color: #a7b0bd;
+  }
+
+  /* 深色背景上纯黑色点几乎看不见，用浅色内描边保证可辨识。 */
+  .zotero-latex-math-color-swatch {
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  }
+
+  .zotero-latex-math-color-swatch[aria-pressed="true"] {
+    border-color: #7fb0ea;
+    box-shadow:
+      0 0 0 2px rgba(127, 176, 234, 0.35),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.28);
   }
 }

@@ -20,8 +20,11 @@ native Zotero text annotations are never modified.
 4. Type text directly. Wrap inline math in `$...$` and block equations in
    `$$...$$`. Use `\$` for a literal dollar sign. If the whole input contains
    no math, it is inserted as a block equation.
-5. Click `Insert` / `Save`.
-6. Double-click a rendered annotation to edit it later.
+5. Pick one of Zotero's annotation colors (yellow, red, green, blue, purple,
+   magenta, orange, gray, or black) before saving. The plugin remembers the
+   last color you pick and reuses it for new equations.
+6. Click `Insert` / `Save`.
+7. Double-click a rendered annotation to edit it later.
 
 Old `[[math:display]]` / `[[math:inline]]` annotations are still supported and
 are migrated to the new syntax when edited. The source is stored as plain

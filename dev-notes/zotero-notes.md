@@ -64,7 +64,21 @@
 - 标注页面/缩放变化由 pdf.js 重建标注层触发 observer；渲染链路要容忍 z-index、DOM 重建、
   重复视图（primary/secondary）和死 wrapper。
 
-## 6. 相关文档
+## 6. 标注颜色与偏好设置（Zotero 10.0.6 源码确认）
+
+- 标注调色板是 **`Zotero.Annotations.COLORS`**，元素为 `[l10n key, hex]` 对
+  （`general-yellow` → `#ffd400` 等 8 色）；Zotero 10 没有 `DEFAULT_COLORS`（旧版才可能
+  存在，插件做了兼容回退）。
+- 文本/墨迹标注在阅读器右键菜单里额外提供黑色：
+  `EXTRA_INK_AND_TEXT_COLORS = [['general-black', '#000000']]`，排在 8 色之后。编辑器的
+  9 色调色板与这个顺序一致。
+- 标注颜色就是 `annotation.color`（十六进制字符串），`Zotero.Annotations.PROPS` 包含
+  `color`；`updateAnnotations` / `_save` 会把它同步到条目的 annotationColor。
+- `Zotero.Prefs.get(name, true)` / `set(name, value, true)` 的 `global=true` 表示 `name`
+  是完整 pref 名（不再拼 `extensions.zotero.`）；`set` 对不存在的字符串 pref 会自动创建。
+  插件的颜色记忆存在 `extensions.zotero.mathtool.lastAnnotationColor`。
+
+## 7. 相关文档
 
 - 混合文本/公式的识别、解析、几何、编辑器：[rich-text-spec.md](rich-text-spec.md)
 - 渲染热路径与性能优化：[performance-optimization.md](performance-optimization.md)

@@ -17,6 +17,10 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 
 - **始终用中文回复。**
 - 用户用 AI 开发、**不读代码**：给结论、风险、可操作建议，不要大段代码/文件 dump。
+- **不确定就查，不要瞎猜**：用户本机装有 Zotero 10，路径 `E:\zotero`；`app\omni.ja`
+  里是完整源码，可用 `tar -tf` / `tar -xOf` 直接查看（如
+  `chrome/content/zotero/xpcom/annotations.js`、`resource/reader/reader.js`）。
+  源码也查不到、或涉及实际交互和视觉效果时，直接请用户真机实测。
 - 用户非常在意**不要拖慢 Zotero**。改动优先“增量/按需/复用”，但不牺牲已确认正常的功能。
 - 只做数学 + 文本：换行、`$...$`、`$$...$$`、`\$`。不做标题/列表/加粗、公式编号、
   `\(...\)` / `\[...\]`。
@@ -24,8 +28,8 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 ## 当前状态
 
 - 分支：`feat/rich-text-math`，**未合并 main**。
-- 2026-10-18 用户真机验证：插入、混合文本渲染、双击编辑基本正常；tag 结构问题已按
-  Zotero 源码修正。完整回归清单见下。
+- 2026-10-18 用户真机验证：插入、混合文本渲染、双击编辑、9 色调色板与颜色记忆正常；
+  tag 结构问题已按 Zotero 源码修正。完整回归清单见下。
 - 工作区可能有未暂存的文档/测试目录调整，提交前先 `git add -A`。
 
 ## ⚠️ 红线
@@ -66,6 +70,12 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 10. **编辑器 iframe 必须从 `getRuntimeDocuments` 排除**（按 `frameElement` 的
     `zotero-latex-math-editor-frame` 类判断）；否则每次打开编辑器都可能被
     `refreshObservedDocuments` 观察并留下一个不释放的 MutationObserver/Document 引用。
+11. **标注颜色**：编辑器只提供 Zotero 内置调色板（运行时 `Zotero.Annotations.COLORS`
+    的 `[l10n key, hex]` 对 + 文本标注额外的黑色 `EXTRA_INK_AND_TEXT_COLORS`），不做
+    自定义取色（原生 `input[type=color]` 的系统弹窗位置不可控，已放弃）。只有用户点
+    色点才写 `annotation.color` 并把颜色记到 pref
+    `extensions.zotero.mathtool.lastAnnotationColor`；只改正文不碰颜色，避免覆盖外部
+    导入的非十六进制颜色。
 
 ## 文档索引
 

@@ -1,5 +1,7 @@
 import katexStyles from "katex/dist/katex.min.css";
 import { renderToString } from "katex";
+import { config } from "../package.json";
+import type { FluentMessageId } from "../typings/i10n";
 import { katexFontURLs } from "./katexFonts";
 import {
   MATH_ANNOTATION_TAG,
@@ -72,6 +74,35 @@ const FIT_CONTENT_CLASS = "zotero-latex-math-fit-content";
 const RICH_CONTENT_CLASS = "zotero-latex-math-rich-content";
 const RICH_MEASURE_CLASS = "zotero-latex-math-rich-measure";
 const EDITOR_FRAME_CLASS = "zotero-latex-math-editor-frame";
+// Zotero 自带的 8 种标注颜色（Zotero 10：Zotero.Annotations.COLORS；旧版是
+// DEFAULT_COLORS）。打开编辑器时优先读取运行中 Zotero 的调色板，这里只是
+// 读不到时的兜底，保证按钮始终可用。
+const FALLBACK_ANNOTATION_COLORS = [
+  "#ffd400",
+  "#ff6666",
+  "#5fb236",
+  "#2ea8e5",
+  "#a28ae5",
+  "#e56eee",
+  "#f19837",
+  "#aaaaaa",
+];
+// 调色板色的本地化标题；运行中 Zotero 若出现新颜色，没有名称就直接显示色值。
+const ANNOTATION_COLOR_LABEL_KEYS: Record<string, FluentMessageId> = {
+  "#ffd400": "math-editor-color-yellow",
+  "#ff6666": "math-editor-color-red",
+  "#5fb236": "math-editor-color-green",
+  "#2ea8e5": "math-editor-color-blue",
+  "#a28ae5": "math-editor-color-purple",
+  "#e56eee": "math-editor-color-magenta",
+  "#f19837": "math-editor-color-orange",
+  "#aaaaaa": "math-editor-color-gray",
+  "#000000": "math-editor-color-black",
+};
+// 文本标注在 Zotero 里额外有黑色（EXTRA_INK_AND_TEXT_COLORS），阅读器右键
+// 菜单把它排在 8 色之后；插件历史默认色也是黑色，所以同样追加在末尾。
+const DEFAULT_ANNOTATION_COLOR = "#000000";
+const ANNOTATION_COLOR_PREF = "lastAnnotationColor";
 // 混合内容的排版基准：测量与 overlay 都按 14px（PDF 单位）排版，再整体按
 // 当前缩放做 transform，缩放时不重排。行高必须与 styles.css 保持一致。
 const MATH_BASE_FONT_SIZE = 14;
@@ -593,8 +624,10 @@ export class LatexMathTool {
         initialSource: "",
         isNew: true,
         baseFontSize: MATH_BASE_FONT_SIZE,
+        initialColor: this.getPreferredAnnotationColor(),
+        applyInitialColorOnSave: true,
         title: getString("math-editor-insert-title"),
-        onSave: async (source, renderedSize) => {
+        onSave: async (source, renderedSize, color) => {
           await this.createAnnotationWithManager(
             reader,
             manager,
@@ -603,6 +636,7 @@ export class LatexMathTool {
             doc,
             MATH_BASE_FONT_SIZE,
             renderedSize,
+            color,
           );
           this.ensureReader(reader)
             .then((runtime) => this.scheduleRender(runtime.reader, true))
@@ -796,6 +830,93 @@ export class LatexMathTool {
   }
 
   /**
+   * 标注颜色统一成小写 6 位十六进制。Zotero 内置色和标注里可能出现的十六进制
+   * 颜色都是这种形式；无效值返回 undefined，由调用方回退到默认色或上次用的颜色。
+   */
+  private normalizeAnnotationColor(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim().toLowerCase();
+    const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(trimmed);
+    if (!match) {
+      return undefined;
+    }
+    const digits = match[1];
+    if (digits.length === 3) {
+      return `#${[...digits].map((digit) => digit + digit).join("")}`;
+    }
+    return trimmed;
+  }
+
+  /**
+   * 编辑器里的调色板：优先用运行中 Zotero 的标注调色板，保证和阅读器右键
+   * 改色看到的一致；拿不到时退回内置的 8 色。文本标注再追加黑色（与 Zotero
+   * 文本/墨迹标注的右键菜单一致，黑色排在最后）。
+   */
+  private getAnnotationColorPalette(): string[] {
+    let palette: string[] = [];
+    try {
+      const annotations = (
+        Zotero as unknown as {
+          Annotations?: { COLORS?: unknown; DEFAULT_COLORS?: unknown };
+        }
+      ).Annotations;
+      // Zotero 10 的 COLORS 是 [l10n key, hex] 对；旧版/其他分支是纯色值数组。
+      const raw = annotations?.COLORS ?? annotations?.DEFAULT_COLORS;
+      if (Array.isArray(raw)) {
+        palette = raw
+          .map((entry) => (Array.isArray(entry) ? entry[1] : entry))
+          .map((color) => this.normalizeAnnotationColor(color))
+          .filter((color): color is string => Boolean(color));
+      }
+    } catch (error) {
+      this.logError("Unable to read Zotero annotation colors", error);
+    }
+    if (!palette.length) {
+      palette = [...FALLBACK_ANNOTATION_COLORS];
+    }
+    return [...new Set([...palette, DEFAULT_ANNOTATION_COLOR])];
+  }
+
+  /** 新插入公式时使用的颜色：上次在编辑器里选过的颜色，没有则沿用黑色。 */
+  private getPreferredAnnotationColor(): string {
+    try {
+      const stored = Zotero.Prefs.get(
+        `${config.prefsPrefix}.${ANNOTATION_COLOR_PREF}`,
+        true,
+      );
+      const normalized = this.normalizeAnnotationColor(stored);
+      // 只接受当前调色板里的颜色：旧版本可能存过任意自定义色，现已不支持，
+      // 继续沿用会让新插入的公式出现调色板里没有的颜色。
+      if (normalized && this.getAnnotationColorPalette().includes(normalized)) {
+        return normalized;
+      }
+      return DEFAULT_ANNOTATION_COLOR;
+    } catch (error) {
+      this.logError("Unable to read the saved annotation color", error);
+      return DEFAULT_ANNOTATION_COLOR;
+    }
+  }
+
+  /** 记住最后一次选择的颜色，供后续插入的新公式使用。 */
+  private rememberAnnotationColor(color: string): void {
+    const normalized = this.normalizeAnnotationColor(color);
+    if (!normalized) {
+      return;
+    }
+    try {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.${ANNOTATION_COLOR_PREF}`,
+        normalized,
+        true,
+      );
+    } catch (error) {
+      this.logError("Unable to save the annotation color", error);
+    }
+  }
+
+  /**
    * 识别 + 解析一条标注的内容。解析结果按 comment 原文缓存；tag / 旧前缀的
    * 来源判断每次都要做（同一段文本可能先被加 tag 再变成数学标注）。
    */
@@ -869,8 +990,13 @@ export class LatexMathTool {
       initialSource: "",
       isNew: true,
       baseFontSize,
+      // 这条兜底路径下标注已由 Zotero 创建，尊重它当前的颜色（通常来自
+      // Zotero 自己的标注调色板）；只有颜色缺失时才用上次记住的颜色。
+      initialColor:
+        this.normalizeAnnotationColor(annotation.color) ??
+        this.getPreferredAnnotationColor(),
       title: getString("math-editor-insert-title"),
-      onSave: async (source, renderedSize) => {
+      onSave: async (source, renderedSize, color) => {
         await this.updateManagerAnnotation(
           reader,
           annotation,
@@ -878,6 +1004,7 @@ export class LatexMathTool {
           doc,
           baseFontSize,
           renderedSize,
+          color,
         );
         this.ensureReader(reader)
           .then((runtime) => {
@@ -1499,8 +1626,12 @@ export class LatexMathTool {
         initialSource: this.getEditorSource(match.annotation, match.content),
         isNew: false,
         baseFontSize,
+        // 编辑已有标注时从它当前的颜色开始，不拿记忆色覆盖。
+        initialColor:
+          this.normalizeAnnotationColor(match.annotation.color) ??
+          this.getPreferredAnnotationColor(),
         title: getString("math-editor-edit-title"),
-        onSave: async (source, renderedSize) => {
+        onSave: async (source, renderedSize, color) => {
           await this.updateManagerAnnotationByID(
             runtime.reader,
             match.annotation.id,
@@ -1508,6 +1639,7 @@ export class LatexMathTool {
             doc,
             baseFontSize,
             renderedSize,
+            color,
           );
           this.scheduleRender(runtime.reader, true);
         },
@@ -2526,9 +2658,18 @@ export class LatexMathTool {
       initialSource: string;
       isNew: boolean;
       baseFontSize: number;
+      /** 编辑器打开时选中的颜色；新插入用上次记住的颜色，编辑用标注当前颜色。 */
+      initialColor: string;
+      /**
+       * 新插入时即使没点色点也把 initialColor 写进新标注，保证保存的颜色与
+       * 编辑器里看到的一致；编辑/兜底路径不设，避免覆盖标注原本的颜色。
+       */
+      applyInitialColorOnSave?: boolean;
       onSave: (
         source: string,
-        renderedSize?: FormulaSize,
+        renderedSize: FormulaSize | undefined,
+        /** 用户主动选过颜色才有值；undefined 表示保持标注原色。 */
+        color: string | undefined,
       ) => Promise<void> | void;
     },
   ): Promise<void> {
@@ -2564,6 +2705,40 @@ export class LatexMathTool {
     const preview = create("div");
     preview.className = "zotero-latex-math-preview";
 
+    let selectedColor =
+      this.normalizeAnnotationColor(options.initialColor) ??
+      this.getPreferredAnnotationColor();
+    // 只有用户主动点过色点才在保存时写回颜色。这样编辑已有标注时，即使它的
+    // color 不是插件能识别的十六进制（例如外部导入的值），只改正文也不会被
+    // 悄悄覆盖成默认色。
+    let colorTouched = false;
+
+    const colorRow = create("div");
+    colorRow.className = "zotero-latex-math-colors";
+    colorRow.setAttribute("role", "group");
+    colorRow.setAttribute("aria-label", getString("math-editor-color-label"));
+
+    const colorLabel = create("span");
+    colorLabel.className = "zotero-latex-math-color-label";
+    colorLabel.textContent = getString("math-editor-color-label");
+    colorRow.appendChild(colorLabel);
+
+    const swatches: HTMLButtonElement[] = [];
+    for (const color of this.getAnnotationColorPalette()) {
+      const swatch = create("button");
+      swatch.type = "button";
+      swatch.className = "zotero-latex-math-color-swatch";
+      swatch.dataset.color = color;
+      swatch.style.backgroundColor = color;
+      const labelKey = ANNOTATION_COLOR_LABEL_KEYS[color];
+      const label = labelKey ? getString(labelKey) : color;
+      swatch.title = label;
+      swatch.setAttribute("aria-label", label);
+      swatch.setAttribute("aria-pressed", "false");
+      swatches.push(swatch);
+      colorRow.appendChild(swatch);
+    }
+
     const actions = create("div");
     actions.className = "zotero-latex-math-actions";
 
@@ -2579,7 +2754,7 @@ export class LatexMathTool {
       : getString("math-editor-save");
 
     actions.append(cancel, save);
-    panel.append(title, input, preview, actions);
+    panel.append(title, input, colorRow, preview, actions);
     overlay.append(panel);
     editorDoc.documentElement?.appendChild(overlay);
 
@@ -2607,6 +2782,28 @@ export class LatexMathTool {
       editorHost.destroy();
     };
 
+    const setSelectedColor = (value: unknown, remember: boolean) => {
+      const normalized = this.normalizeAnnotationColor(value);
+      if (!normalized) {
+        return;
+      }
+      selectedColor = normalized;
+      for (const swatch of swatches) {
+        const active = swatch.dataset.color === normalized;
+        swatch.setAttribute("aria-pressed", active ? "true" : "false");
+      }
+      if (preview.classList.contains("is-empty")) {
+        preview.style.removeProperty("color");
+      } else {
+        preview.style.color = normalized;
+      }
+      // 选中即记住（不等保存）：用户选好颜色后取消，再插入新公式时仍是这个色。
+      if (remember) {
+        colorTouched = true;
+        this.rememberAnnotationColor(normalized);
+      }
+    };
+
     const updatePreview = () => {
       const raw = input.value.trim();
       const source = this.normalizeEditorSource(raw, options.isNew);
@@ -2615,6 +2812,11 @@ export class LatexMathTool {
       preview.innerHTML = source
         ? this.renderEditorPreview(source)
         : getString("math-editor-empty-preview");
+      if (source.length === 0) {
+        preview.style.removeProperty("color");
+      } else {
+        preview.style.color = selectedColor;
+      }
     };
 
     const schedulePreview = () => {
@@ -2663,7 +2865,13 @@ export class LatexMathTool {
         if (closed) {
           return;
         }
-        await options.onSave(source, renderedSize);
+        await options.onSave(
+          source,
+          renderedSize,
+          colorTouched || options.applyInitialColorOnSave
+            ? selectedColor
+            : undefined,
+        );
         close();
       } catch (error) {
         saving = false;
@@ -2682,6 +2890,13 @@ export class LatexMathTool {
       save.disabled = input.value.trim().length === 0;
       schedulePreview();
     });
+    for (const swatch of swatches) {
+      swatch.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setSelectedColor(swatch.dataset.color, true);
+      });
+    }
     cancel.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2703,6 +2918,7 @@ export class LatexMathTool {
       await saveFormula();
     });
 
+    setSelectedColor(selectedColor, false);
     updatePreview();
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
@@ -2780,6 +2996,7 @@ export class LatexMathTool {
     doc?: Document,
     baseFontSize: number = MATH_BASE_FONT_SIZE,
     renderedSize?: FormulaSize,
+    color?: string,
   ): Promise<void> {
     if (!manager.addAnnotation) {
       throw new Error("Reader annotation manager is not available");
@@ -2802,7 +3019,9 @@ export class LatexMathTool {
     // "Tag data must contain 'tag' property"（2026-10 真机 + Zotero 源码确认）。
     const rawAnnotation = {
       type: "text",
-      color: "#000000",
+      color:
+        this.normalizeAnnotationColor(color) ??
+        this.getPreferredAnnotationColor(),
       pageLabel: this.getPageLabel(reader, location.pageIndex, doc),
       sortIndex: this.createSortIndex(location),
       position: {
@@ -3076,6 +3295,7 @@ export class LatexMathTool {
     doc?: Document,
     baseFontSize: number = this.getAnnotationFontSize(annotation),
     renderedSize?: FormulaSize,
+    color?: string,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     if (!manager) {
@@ -3088,6 +3308,10 @@ export class LatexMathTool {
     }
     annotation.text = undefined;
     annotation.comment = source;
+    const normalizedColor = this.normalizeAnnotationColor(color);
+    if (normalizedColor) {
+      annotation.color = normalizedColor;
+    }
 
     if (doc && content) {
       const size =
@@ -3116,6 +3340,7 @@ export class LatexMathTool {
     doc?: Document,
     baseFontSize?: number,
     renderedSize?: FormulaSize,
+    color?: string,
   ): Promise<void> {
     const manager = this.getAnnotationManager(reader);
     const annotation =
@@ -3134,6 +3359,7 @@ export class LatexMathTool {
       doc,
       baseFontSize,
       renderedSize,
+      color,
     );
   }
 

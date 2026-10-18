@@ -113,6 +113,14 @@ $$x^2 \ge 0$$
 - 保存前 `trim()`；空内容禁止保存。
 - 预览与最终 overlay 必须共用同一套 CSS/字体；测量在编辑器 iframe 里完成
   （先渲染预览 → 强制布局 → `fonts.ready`），再按当前页 viewport scale 写回 rect。
+- 颜色：编辑窗口只放 Zotero 内置标注调色板（Zotero 10 运行时读
+  `Zotero.Annotations.COLORS`（`[l10n key, hex]` 对），旧版回退
+  `DEFAULT_COLORS`，再兜底 8 色），文本标注额外追加黑色（Zotero 的
+  `EXTRA_INK_AND_TEXT_COLORS`，右键菜单里同样排在最后）。不做任意自定义
+  取色（原生 `input[type=color]` 的系统弹窗位置不可控，已放弃）。选中即写
+  `extensions.zotero.mathtool.lastAnnotationColor`，之后新插入沿用；编辑已有
+  标注从该标注当前 `color` 开始。保存时把颜色写回 `annotation.color`
+  （overlay 本来就按它着色，和右键改色一致）。
 
 ## 6. 尺寸与缩放
 
@@ -160,11 +168,12 @@ $$x^2 \ge 0$$
    `adjustTextAnnotationPosition`，长混排可能出现缩小/留白。
 5. 100/150/200% 缩放下文字换行、基线与 rect 对齐。
 6. 多公式标注滚动/缩放性能。
+7. 9 色调色板是否与阅读器右键改色一致；颜色偏好重启后是否仍生效。
 
 ## 10. 实现进度
 
 已完成：纯解析 + tag 判断 + 渲染 HTML 构建（`test/unit/richText.test.ts` 覆盖）、
 编辑器去模式与混排预览、编辑器 iframe 内测量、`mathTool.ts` 接入（识别 / overlay /
-创建更新 rect / 旧前缀迁移）。
+创建更新 rect / 旧前缀迁移）、编辑器 9 色调色板与上次颜色记忆（2026-10-18 真机验证）。
 
 待做：侧栏编辑 rect 归一化、混排超宽块级公式策略、字体/行高视觉微调、缓存上限实测。

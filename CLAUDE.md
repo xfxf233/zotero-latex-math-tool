@@ -27,9 +27,20 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 
 ## 当前状态
 
-- 分支：`feat/rich-text-math`，**未合并 main**。
+- 分支：`main`（`feat/rich-text-math` 已合入）。
 - 2026-10-18 用户真机验证：插入、混合文本渲染、双击编辑、9 色调色板与颜色记忆正常；
   tag 结构问题已按 Zotero 源码修正。完整回归清单见下。
+- 2026-10-19 纯公式的 rect 改为按 overlay 实际 fit-content 尺寸测量（不再用 rich
+  容器，去掉行高/块级公式 margin 和 36pt 最小宽度），新插入/编辑保存后框贴合公式。
+  混排的最小宽高改为兜底一个当前字号（原写死 36/20pt，小字号单行会被撑成两行高）。
+  编辑保存改为保留当前 rect 宽度（不再被 320pt 自动换行宽度覆盖）；拖动左右边框
+  时直接 patch `_primaryView.adjustTextAnnotationPosition`，在 Zotero 的重排里返回
+  按渲染内容算好的 rect（同时绕过单行文本按源码回收宽度的逻辑），
+  `updateAnnotations` 包装只作兜底。拖动时的测量在 reader 文档里，必须用
+  `layoutScale` 做 viewport scale 换算（见规则 6）。原生文本标注不受影响。
+  已有标注的旧 rect 不会自动改，拖动或编辑保存后才会按新规则重算。
+- 2026-10-19 0.2.1 真机验证（用户确认）：左右拖动松手后框高按渲染内容收紧、
+  宽度保持，不再需要手动点开保存；上下拖动保持用户拖出的高度。完整回归清单见下。
 - 工作区可能有未暂存的文档/测试目录调整，提交前先 `git add -A`。
 
 ## ⚠️ 红线
@@ -58,9 +69,12 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 5. **纯公式**（只有一个公式节点、没有普通文本；含 legacy）继续走旧的
    `fit-content` + `fitFormulaToOverlay`；只有文本+公式混排才走 rich 布局。
    不要把纯公式改成 rich，否则宽公式会横向溢出、旧公式视觉会变。
-6. 编辑器测量：先在 iframe 里渲染预览 → 强制布局 → 等 `editorDoc.fonts.ready` → 用同一套
-   rich CSS 量出 PDF 单位宽高 → 按当前页 viewport scale 写回 rect。**不要**改回在 reader
-   文档里用未加载字体测量。
+6. 编辑器测量：先在 iframe 里渲染预览 → 强制布局 → 等 `editorDoc.fonts.ready` → 用与
+   overlay 相同的 CSS 量出 PDF 单位宽高（混排用 rich CSS，纯公式用 fit-content DOM，
+   清掉 `.katex-display` 的默认 margin）→ 按当前页 viewport scale 写回 rect。**不要**
+   改回在 reader 文档里用未加载字体测量。万不得已要在 reader 文档里量（拖动后归一化）
+   时，CSS px = PDF 单位 × viewport scale，必须传 `layoutScale` 换算后再除回来，
+   否则宽度会被当成 CSS px，换行数变多、高度永远收不拢。
 7. 识别先看 tag / 旧前缀，再解析 comment；解析结果、KaTeX HTML、rich 高度都有缓存。
    普通文本标注不解析。
 8. 侧栏会看到 `mathtool` tag；旧标注只有在插件里编辑保存后才补 tag。
@@ -102,7 +116,7 @@ npm run test:rich-text        # 纯解析/渲染单测，不需要 Zotero
   帮助 > 调试日志 > 启用日志 → 搜 `render diagnostics`。production 构建会短路诊断代码，
   抓完重新 `npm run build`。
 
-### `feat/rich-text-math` 真机回归清单
+### 真机回归清单
 
 1. 新插入后重启 Zotero / 重开 PDF：`mathtool` tag 仍在，公式仍渲染。
 2. comment 换行原样保留；多行混排正常。

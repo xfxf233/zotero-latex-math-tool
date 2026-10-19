@@ -65,6 +65,7 @@
   display: inline-block;
   width: max-content;
   height: max-content;
+  line-height: normal;
   transform-origin: left top;
 }
 

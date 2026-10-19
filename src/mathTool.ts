@@ -65,6 +65,14 @@ type AnnotationManager = _ZoteroTypes.Reader.AnnotationManager & {
   ) => void;
 };
 
+/** PDF view 上负责把文本标注 rect 对齐到内容的内部方法。 */
+type AdjustablePDFView = {
+  adjustTextAnnotationPosition?: (
+    annotation: unknown,
+    options?: Record<string, unknown>,
+  ) => unknown;
+};
+
 const STYLE_ID = "zotero-latex-math-tool-styles";
 const TOOLBAR_STYLE_ID = "zotero-latex-math-tool-toolbar-styles";
 const MANAGER_RENDER_CLASS = "zotero-latex-math-manager-render";
@@ -107,11 +115,9 @@ const ANNOTATION_COLOR_PREF = "lastAnnotationColor";
 // 当前缩放做 transform，缩放时不重排。行高必须与 styles.css 保持一致。
 const MATH_BASE_FONT_SIZE = 14;
 const RICH_LINE_HEIGHT = 1.4;
-const RICH_MIN_WIDTH = 36;
 const RICH_TEXT_MAX_WIDTH = 320;
-// 纯公式（没有普通文本）沿用旧公式的宽度上限，避免大公式被 320 截断。
-const RICH_FORMULA_MAX_WIDTH = 720;
-const RICH_MIN_HEIGHT = 20;
+// 宽度硬上限：纯公式和用户手动拉宽的框都按 720pt 截断。
+const RICH_MAX_WIDTH = 720;
 // 选中公式后再按下：指针移动超过该像素数视为拖动（松手不弹编辑器），
 // 未拖动才视为"再点一下"（松手弹编辑器）。量级与浏览器点击判定一致。
 const CLICK_DRAG_THRESHOLD_PX = 5;
@@ -138,6 +144,7 @@ export class LatexMathTool {
     Array<() => void>
   >();
   private patchedManagers = new WeakSet<AnnotationManager>();
+  private patchedViews = new WeakSet<object>();
   private patchedReaders = new WeakSet<_ZoteroTypes.ReaderInstance>();
   private runtimeSet = new Set<ReaderRuntime>();
   private lastRenderDiagnostics = new WeakMap<
@@ -714,6 +721,9 @@ export class LatexMathTool {
           this.captureNativeTextAnnotation(reader, annotation);
         }
         this.invalidateMathAnnotationCache(reader);
+        // 拖动边框只改 rect，不会按渲染内容重排；在交给 Zotero 合并前把宽度
+        // 变化后的高度补算好，避免一行内容留在两行高的框里。
+        this.normalizeResizedMathAnnotationRects(reader, annotations);
         const result = originalUpdateAnnotations(annotations);
         // Zotero 的 updateAnnotations 入参可能是 partial（例如侧栏只传
         // { id, comment } 或 { id, tags }）。originalUpdateAnnotations 会把它们
@@ -776,6 +786,251 @@ export class LatexMathTool {
     }
 
     this.patchedManagers.add(manager);
+    this.patchViewAdjustTextAnnotationPosition(reader);
+  }
+
+  /**
+   * Zotero 对"单行文本标注"会把用户拖出来的宽度改回源码文本宽度（最多 300pt），
+   * 并且拖动后总是按源码重新算高度。数学标注的源码（`$...$`）比渲染结果长得多，
+   * 所以这里直接接管 resize 调用：
+   * - 宽度变了（左右/四角拖动）：按新宽度 + 渲染内容算出高度，返回新的 rect，
+   *   不让 Zotero 用源码高度（这一步在 view 内部完成，不依赖后续 update 包装）。
+   * - 宽度没变（上下拖动）：原样返回，保留用户拖出来的高度。
+   * Zotero 改 comment 时那条带 `enableSingleLineMaxWidth` 的调用保持原生行为，
+   * 原生文本标注也不受影响。
+   */
+  private patchViewAdjustTextAnnotationPosition(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+  ): void {
+    const internalReader = (
+      reader as unknown as {
+        _internalReader?: {
+          _primaryView?: AdjustablePDFView;
+          _secondaryView?: AdjustablePDFView;
+          _lastView?: AdjustablePDFView;
+        };
+      }
+    )._internalReader;
+    for (const view of [
+      internalReader?._primaryView,
+      internalReader?._secondaryView,
+      internalReader?._lastView,
+    ]) {
+      this.patchSingleViewAdjustTextAnnotationPosition(reader, view);
+    }
+  }
+
+  private patchSingleViewAdjustTextAnnotationPosition(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    view: AdjustablePDFView | undefined,
+  ): void {
+    if (!view?.adjustTextAnnotationPosition) {
+      return;
+    }
+    if (this.patchedViews.has(view)) {
+      return;
+    }
+    const original = view.adjustTextAnnotationPosition.bind(view);
+    view.adjustTextAnnotationPosition = (annotation, options) => {
+      try {
+        const typed = annotation as _ZoteroTypes.Reader.Annotation;
+        // `enableSingleLineMaxWidth` 是 Zotero 改 comment 时那条调用；保持原生
+        // 行为，避免影响侧栏改正文。这里只接管拖动边框的 resize 调用。
+        if (
+          options?.enableSingleLineMaxWidth === true ||
+          typed?.type !== "text" ||
+          !this.parseAnnotationMath(typed)
+        ) {
+          return original(annotation, options);
+        }
+        const position = typed.position as
+          | {
+              rects?: number[][];
+              rotation?: unknown;
+              pageIndex?: unknown;
+            }
+          | undefined;
+        const incomingRect = position?.rects?.[0];
+        const rotation = Number(position?.rotation ?? 0);
+        if (
+          !incomingRect ||
+          (Number.isFinite(rotation) && rotation % 360 !== 0)
+        ) {
+          return original(annotation, options);
+        }
+
+        const manager = this.getAnnotationManager(reader);
+        const existing =
+          manager?._getAnnotationByID?.(typed.id) ??
+          this.getManagerAnnotations(manager).find(
+            (item) => item.id === typed.id,
+          );
+        const oldRect = existing
+          ? this.getPDFPosition(existing)?.rects?.[0]
+          : undefined;
+        const newWidth = Math.abs(incomingRect[2] - incomingRect[0]);
+        const oldWidth = oldRect
+          ? Math.abs(oldRect[2] - oldRect[0])
+          : Number.NaN;
+        // 宽度没变 = 上下边框拖动：保留用户拖出来的高度，不让 Zotero 按源码重排。
+        if (Number.isFinite(oldWidth) && Math.abs(newWidth - oldWidth) < 0.5) {
+          return typed.position;
+        }
+
+        const doc =
+          this.runtimes.get(reader)?.doc ?? this.readerDocs.get(reader);
+        const pageIndex = Number(position?.pageIndex);
+        if (doc && newWidth > 0) {
+          const layoutScale = Number.isFinite(pageIndex)
+            ? this.getDocZoom(doc, reader, pageIndex)
+            : 1;
+          const size = this.measureRichSource(
+            doc,
+            this.getMathContent(typed),
+            this.getAnnotationFontSize(typed),
+            { width: newWidth, layoutScale },
+          );
+          if (size) {
+            const left = Math.min(incomingRect[0], incomingRect[2]);
+            const top = Math.min(incomingRect[1], incomingRect[3]);
+            const right = Math.max(incomingRect[0], incomingRect[2]);
+            const nextPosition = {
+              ...(position ?? {}),
+              rects: [[left, top, right, top + size.height]],
+            };
+            return manager
+              ? this.cloneIntoManagerRealm(manager, nextPosition)
+              : nextPosition;
+          }
+        }
+
+        // 量不出来时至少保留拖动宽度，高度交给 updateAnnotations 包装兜底。
+        return original(annotation, {
+          ...(options ?? {}),
+          adjustSingleLineWidth: false,
+        });
+      } catch (error) {
+        this.logError("Unable to adjust math annotation position", error);
+      }
+      return original(annotation, options);
+    };
+    this.patchedViews.add(view);
+  }
+
+  /**
+   * 用户拖动标注边框时，Zotero 只更新 rect 宽高，不会按渲染后的内容重排。
+   * 宽度变化（右边框/左右边框拖动）时按新宽度重新量高度并写回本次 update，
+   * 避免一行内容仍占着两行高的框。只处理纯 position 更新（不带 comment）：
+   * 插件自己的编辑保存已经量好尺寸，侧栏改正文走 comment 更新。
+   */
+  private normalizeResizedMathAnnotationRects(
+    reader: _ZoteroTypes.ReaderInstance<"pdf">,
+    updates: readonly _ZoteroTypes.Reader.Annotation[],
+  ): void {
+    if (!updates.length) {
+      return;
+    }
+    this.patchViewAdjustTextAnnotationPosition(reader);
+    const doc = this.runtimes.get(reader)?.doc ?? this.readerDocs.get(reader);
+    const manager = this.getAnnotationManager(reader);
+    if (!doc || !manager) {
+      return;
+    }
+
+    for (const update of updates) {
+      if (!update.id || update.comment !== undefined) {
+        continue;
+      }
+      const position = update.position as
+        | { rects?: number[][]; fontSize?: unknown; rotation?: unknown }
+        | undefined;
+      const incomingRect = position?.rects?.[0];
+      if (!incomingRect) {
+        continue;
+      }
+      const existing =
+        manager._getAnnotationByID?.(update.id) ??
+        this.getManagerAnnotations(manager).find(
+          (annotation) => annotation.id === update.id,
+        );
+      if (
+        !existing ||
+        existing.type !== "text" ||
+        !this.parseAnnotationMath(existing)
+      ) {
+        continue;
+      }
+      const existingPosition = existing.position as
+        | { rotation?: unknown; fontSize?: unknown }
+        | undefined;
+      const rotation = Number(existingPosition?.rotation ?? 0);
+      const incomingRotation = Number(position?.rotation);
+      if (
+        (Number.isFinite(rotation) && rotation % 360 !== 0) ||
+        (Number.isFinite(incomingRotation) && incomingRotation % 360 !== 0)
+      ) {
+        continue;
+      }
+      const oldRect = this.getPDFPosition(existing)?.rects?.[0];
+      if (!oldRect) {
+        continue;
+      }
+      const oldWidth = Math.abs(oldRect[2] - oldRect[0]);
+      const newWidth = Math.abs(incomingRect[2] - incomingRect[0]);
+      const rawFontSize = Number(position?.fontSize);
+      const fontSize =
+        Number.isFinite(rawFontSize) && rawFontSize > 0
+          ? rawFontSize
+          : this.getAnnotationFontSize(existing);
+      const fontSizeChanged =
+        Math.abs(fontSize - this.getAnnotationFontSize(existing)) >= 0.01;
+      if (
+        !(newWidth > 0) ||
+        (Math.abs(newWidth - oldWidth) < 0.5 && !fontSizeChanged)
+      ) {
+        continue;
+      }
+
+      const positionPageIndex = this.getPDFPosition(existing)?.pageIndex;
+      const layoutScale =
+        typeof positionPageIndex === "number"
+          ? this.getDocZoom(doc, reader, positionPageIndex)
+          : 1;
+      const size = this.measureRichSource(
+        doc,
+        this.getMathContent(existing),
+        fontSize,
+        { width: newWidth, layoutScale },
+      );
+      if (!size) {
+        continue;
+      }
+      const top = Math.min(incomingRect[1], incomingRect[3]);
+      const bottom = top + size.height;
+      if (Math.abs(bottom - Math.max(incomingRect[1], incomingRect[3])) < 0.5) {
+        continue;
+      }
+
+      const nextRect = [
+        Math.min(incomingRect[0], incomingRect[2]),
+        top,
+        Math.max(incomingRect[0], incomingRect[2]),
+        bottom,
+      ];
+      try {
+        (update as { position: unknown }).position = {
+          ...(position ?? {}),
+          rects: this.cloneIntoManagerRealm(manager, [
+            nextRect.map((value) => Number(value)),
+          ]),
+        };
+      } catch (error) {
+        this.logError(
+          "Unable to normalize resized math annotation height",
+          error,
+        );
+      }
+    }
   }
 
   /**
@@ -827,6 +1082,21 @@ export class LatexMathTool {
       (annotation.position as { fontSize?: unknown }).fontSize,
     );
     return Number.isFinite(value) && value > 0 ? value : MATH_BASE_FONT_SIZE;
+  }
+
+  /**
+   * 标注当前 rect 的宽度（PDF 单位）。编辑已有标注时按这个宽度重排版，
+   * 保留用户手动拉宽的框；保存时只重算高度。
+   */
+  private getAnnotationLayoutWidth(
+    annotation: _ZoteroTypes.Reader.Annotation,
+  ): number | undefined {
+    const rect = this.getPDFPosition(annotation)?.rects?.[0];
+    if (!rect) {
+      return undefined;
+    }
+    const width = Math.abs(rect[2] - rect[0]);
+    return width > 0 ? width : undefined;
   }
 
   /**
@@ -1626,6 +1896,7 @@ export class LatexMathTool {
         initialSource: this.getEditorSource(match.annotation, match.content),
         isNew: false,
         baseFontSize,
+        layoutWidth: this.getAnnotationLayoutWidth(match.annotation),
         // 编辑已有标注时从它当前的颜色开始，不拿记忆色覆盖。
         initialColor:
           this.normalizeAnnotationColor(match.annotation.color) ??
@@ -2658,6 +2929,11 @@ export class LatexMathTool {
       initialSource: string;
       isNew: boolean;
       baseFontSize: number;
+      /**
+       * 编辑已有标注时传入它当前的 PDF 宽度：按这个宽度重新排版/量高度，
+       * 不把用户手动拉宽的框改回 320pt 自动换行宽度。
+       */
+      layoutWidth?: number;
       /** 编辑器打开时选中的颜色；新插入用上次记住的颜色，编辑用标注当前颜色。 */
       initialColor: string;
       /**
@@ -2859,6 +3135,7 @@ export class LatexMathTool {
           editorDoc,
           source,
           options.baseFontSize,
+          { width: options.layoutWidth },
         );
         // 字体等待/测量期间用户可能已经取消（overlay 点击/Cancel）；不要在
         // 编辑器已销毁后继续创建/更新标注。
@@ -3077,13 +3354,16 @@ export class LatexMathTool {
       return location.rect;
     }
 
+    const zoom = this.getDocZoom(doc, reader, location.pageIndex);
     const size =
-      renderedSize ?? this.measureRichSource(doc, source, baseFontSize);
+      renderedSize ??
+      this.measureRichSource(doc, source, baseFontSize, {
+        layoutScale: zoom,
+      });
     if (!size) {
       return location.rect;
     }
 
-    const zoom = this.getDocZoom(doc, reader, location.pageIndex);
     return this.resizeLocationRect(
       doc,
       location,
@@ -3093,16 +3373,22 @@ export class LatexMathTool {
   }
 
   /**
-   * 按基准字号测量混合内容在 PDF 单位下的自然宽高。
+   * 按基准字号测量内容在 PDF 单位下的自然宽高。
    *
    * 与 overlay 共用同一套 CSS/字体；测量只在保存/编辑时发生，不在渲染热路径。
-   * 纯公式沿用旧的 720pt 宽度上限，含普通文本的内容按 320pt 换行。
+   * 纯公式按 overlay 的 fit-content 渲染量（而不是 rich 容器），否则 rich 容器的
+   * 行高 / 块级公式上下边距会把 rect 撑高，框看起来比公式大一圈。含普通文本的
+   * 内容默认按 320pt 换行；编辑已有标注时传入它当前的 `width`，保留用户手动拉宽
+   * 的宽度，只重算高度。
    */
   private measureRichSource(
     doc: Document,
     source: string,
     fontSize: number,
+    options: { width?: number; layoutScale?: number } = {},
   ): FormulaSize | undefined {
+    const layoutScale =
+      options.layoutScale && options.layoutScale > 0 ? options.layoutScale : 1;
     const content = parseMathContent(source);
     if (!content) {
       return undefined;
@@ -3112,6 +3398,19 @@ export class LatexMathTool {
         doc,
         this.legacyToRichSource(content),
         fontSize,
+        options,
+      );
+    }
+
+    const formula = this.getSingleFormula(content);
+    if (formula) {
+      return this.measureFormulaSource(
+        doc,
+        formula.latex,
+        formula.mode,
+        fontSize,
+        options.width,
+        layoutScale,
       );
     }
 
@@ -3127,7 +3426,7 @@ export class LatexMathTool {
     measure.style.top = "-10000px";
     measure.style.visibility = "hidden";
     measure.style.pointerEvents = "none";
-    measure.style.fontSize = `${fontSize}px`;
+    measure.style.fontSize = `${fontSize * layoutScale}px`;
     measure.style.lineHeight = `${RICH_LINE_HEIGHT}`;
     measure.style.whiteSpace = "pre-wrap";
     measure.style.width = "max-content";
@@ -3135,24 +3434,105 @@ export class LatexMathTool {
     body.appendChild(measure);
 
     try {
-      const naturalWidth = measure.getBoundingClientRect().width;
+      const naturalWidth = measure.getBoundingClientRect().width / layoutScale;
       const hasText = content.document.nodes.some(
         (node) => node.type === "text" && node.value.trim().length > 0,
       );
-      const maxWidth = hasText ? RICH_TEXT_MAX_WIDTH : RICH_FORMULA_MAX_WIDTH;
+      // 最小尺寸只兜底一个字号（与 Zotero 原生文本标注的 min-width/min-height
+      // 一致），不能写死 20/36：小字号（例如 7pt）的单行标注会被撑成两行高，
+      // 框里留出一大块空白。
+      const minSize = Math.max(Math.ceil(fontSize), 1);
+      const requestedWidth = options.width;
+      const maxWidth =
+        requestedWidth !== undefined
+          ? RICH_MAX_WIDTH
+          : hasText
+            ? RICH_TEXT_MAX_WIDTH
+            : RICH_MAX_WIDTH;
       const width = this.clamp(
-        Math.ceil(naturalWidth),
-        RICH_MIN_WIDTH,
+        requestedWidth !== undefined
+          ? Math.round(requestedWidth)
+          : Math.ceil(naturalWidth),
+        minSize,
         maxWidth,
       );
-      measure.style.width = `${width}px`;
-      const height = measure.getBoundingClientRect().height;
+      measure.style.width = `${width * layoutScale}px`;
+      const height = measure.getBoundingClientRect().height / layoutScale;
       if (!height) {
         return undefined;
       }
       return {
         width,
-        height: Math.max(Math.ceil(height), RICH_MIN_HEIGHT),
+        height: Math.max(Math.ceil(height), minSize),
+      };
+    } finally {
+      measure.remove();
+    }
+  }
+
+  /**
+   * 测量纯公式在 overlay 里的真实渲染尺寸。
+   *
+   * 必须和 `fitFormulaToOverlay` 量到的 DOM 一致：独立的 fit-content span、
+   * 块级公式的 `.katex-display` 去掉默认 1em 上下边距、`white-space: nowrap`。
+   * 纯公式的 rect 按这个尺寸写回，框才会贴合公式；用 rich 容器量会把行高和
+   * 块级公式的上下边距算进去，框比公式高出一大截。
+   *
+   * 传入 `requestedWidth`（编辑/拖动后保留当前宽度）时按该宽度等比缩放高度，
+   * overlay 的 fit 缩放后仍然正好填满框。`layoutScale` 用于在 reader 文档里
+   * 按当前缩放把 PDF 单位换算成 CSS px 再量（返回的仍是 PDF 单位）。
+   */
+  private measureFormulaSource(
+    doc: Document,
+    latex: string,
+    mode: MathMode,
+    fontSize: number,
+    requestedWidth?: number,
+    layoutScale = 1,
+  ): FormulaSize | undefined {
+    this.injectStyles(doc);
+    const body = doc.body;
+    if (!body) {
+      return undefined;
+    }
+
+    const measure = doc.createElement("span");
+    measure.className = FIT_CONTENT_CLASS;
+    measure.style.position = "fixed";
+    measure.style.left = "-10000px";
+    measure.style.top = "-10000px";
+    measure.style.visibility = "hidden";
+    measure.style.pointerEvents = "none";
+    measure.style.fontSize = `${fontSize * layoutScale}px`;
+    measure.style.lineHeight = "normal";
+    measure.style.whiteSpace = "nowrap";
+    measure.innerHTML = this.renderLatex(latex, mode);
+    // 块级公式在 overlay 里由 `.zotero-latex-math-manager-render .katex-display`
+    // 清零 margin；测量用的 span 不在该容器内，需要单独清零。
+    for (const display of measure.querySelectorAll<HTMLElement>(
+      ".katex-display",
+    )) {
+      display.style.margin = "0";
+    }
+    body.appendChild(measure);
+
+    try {
+      const rect = measure.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return undefined;
+      }
+      const naturalWidth = rect.width / layoutScale;
+      const naturalHeight = rect.height / layoutScale;
+      // 宽度上限 720pt；超出（或用户手动指定更窄/更宽）时等比缩放高度，
+      // overlay 按 rect 做 fit 缩放后公式仍然正好填满框。
+      const width =
+        requestedWidth !== undefined
+          ? this.clamp(Math.round(requestedWidth), 1, RICH_MAX_WIDTH)
+          : Math.min(naturalWidth, RICH_MAX_WIDTH);
+      const height = naturalHeight * (width / naturalWidth);
+      return {
+        width: Math.max(Math.ceil(width), 1),
+        height: Math.max(Math.ceil(height), 1),
       };
     } finally {
       measure.remove();
@@ -3314,15 +3694,21 @@ export class LatexMathTool {
     }
 
     if (doc && content) {
-      const size =
-        renderedSize ?? this.measureRichSource(doc, source, baseFontSize);
       const position = this.getPDFPosition(annotation);
-      if (size && position) {
+      if (position) {
         const zoom = this.getDocZoom(doc, reader, position.pageIndex);
-        this.resizeAnnotationRect(reader, manager, annotation, doc, {
-          width: size.width * zoom,
-          height: size.height * zoom,
-        });
+        const size =
+          renderedSize ??
+          this.measureRichSource(doc, source, baseFontSize, {
+            width: this.getAnnotationLayoutWidth(annotation),
+            layoutScale: zoom,
+          });
+        if (size) {
+          this.resizeAnnotationRect(reader, manager, annotation, doc, {
+            width: size.width * zoom,
+            height: size.height * zoom,
+          });
+        }
       }
     }
 

@@ -1,4 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>zotero-plugin-dev/renovate-config"]
+  "extends": ["github>zotero-plugin-dev/renovate-config"],
+  "dependencyDashboardApproval": true,
+  "automerge": false,
+  "packageRules": [
+    {
+      "description": "Override the upstream ':automergeStableNonMajor' preset: never merge without a human.",
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "digest"],
+      "automerge": false
+    },
+    {
+      "description": "typescript-eslint only supports TypeScript < 6.1; drop this rule once upstream catches up.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<6.1"
+    }
+  ]
 }

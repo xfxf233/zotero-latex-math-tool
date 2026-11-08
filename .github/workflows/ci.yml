@@ -8,11 +8,13 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GitHub_TOKEN }}
     steps:
       - name: Setup JS
         uses: zotero-plugin-dev/workflows/setup-js@main
@@ -21,15 +23,21 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GitHub_TOKEN }}
     steps:
       - name: Setup JS
         uses: zotero-plugin-dev/workflows/setup-js@main
       - name: Run Build
         run: npm run build
       - name: Upload build result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-result
           path: .scaffold/build
+
+  rich-text:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup JS
+        uses: zotero-plugin-dev/workflows/setup-js@main
+      - name: Run rich-text unit tests
+        run: npm run test:rich-text

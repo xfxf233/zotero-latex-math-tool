@@ -1,32 +1,42 @@
-import { ZoteroToolkit } from "zotero-plugin-toolkit";
-import { config } from "../../package.json";
+export { createZToolkit, getGlobal };
 
-export { createZToolkit };
-
-function createZToolkit() {
-  const _ztoolkit = new ZoteroToolkit();
-  /**
-   * Alternatively, import toolkit modules you use to minify the plugin size.
-   * You can add the modules under the `MyToolkit` class below and uncomment the following line.
-   */
-  // const _ztoolkit = new MyToolkit();
-  initZToolkit(_ztoolkit);
-  return _ztoolkit;
+/**
+ * Look up a global from the plugin sandbox, falling back to the Zotero main window.
+ *
+ * This mirrors what `BasicTool.getGlobal` from `zotero-plugin-toolkit` did. The plugin
+ * only ever needs `Zotero` and `Localization`, so the dependency is not worth keeping.
+ */
+function getGlobal(name: string): any {
+  const sandbox = globalThis as unknown as Record<string, any>;
+  if (typeof sandbox[name] !== "undefined") {
+    return sandbox[name];
+  }
+  const win = Zotero.getMainWindow() as unknown as Record<string, any> | null;
+  switch (name) {
+    case "Zotero":
+    case "zotero":
+      return Zotero;
+    case "window":
+      return win;
+    case "document":
+      return win?.document;
+    default:
+      return win?.[name];
+  }
 }
 
-function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
-  const env = __env__;
-  _ztoolkit.basicOptions.log.prefix = `[${config.addonName}]`;
-  _ztoolkit.basicOptions.log.disableConsole = env === "production";
-  _ztoolkit.UI.basicOptions.ui.enableElementJSONLog = __env__ === "development";
-  _ztoolkit.UI.basicOptions.ui.enableElementDOMLog = __env__ === "development";
-  // Getting basicOptions.debug will load global modules like the debug bridge.
-  // since we want to deprecate it, should avoid using it unless necessary.
-  // _ztoolkit.basicOptions.debug.disableDebugBridgePassword =
-  //   __env__ === "development";
-  _ztoolkit.basicOptions.api.pluginID = config.addonID;
-  _ztoolkit.ProgressWindow.setIconURI(
-    "default",
-    `chrome://${config.addonRef}/content/icons/favicon.png`,
-  );
+/**
+ * Minimal replacement for `ZoteroToolkit`.
+ *
+ * Only the pieces the plugin actually used are kept. `unregisterAll` is a no-op because
+ * nothing is registered through the toolkit: every listener and UI element in the plugin
+ * is created and torn down with native Zotero APIs.
+ */
+function createZToolkit() {
+  return {
+    getGlobal,
+    unregisterAll() {
+      // Intentionally empty: nothing was ever registered with the toolkit.
+    },
+  };
 }

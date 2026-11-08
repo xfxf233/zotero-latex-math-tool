@@ -10,9 +10,9 @@
       "automerge": false
     },
     {
-      "description": "typescript-eslint only supports TypeScript < 6.1; drop this rule once upstream catches up.",
+      "description": "typescript-eslint 8.39 (pinned by @zotero-plugin/eslint-config 0.6.7) supports TypeScript < 6.0 only. Relax to < 6.1 after that config is upgraded, and drop the rule once typescript-eslint supports 7.x.",
       "matchPackageNames": ["typescript"],
-      "allowedVersions": "<6.1"
+      "allowedVersions": "<6.0"
     }
   ]
 }

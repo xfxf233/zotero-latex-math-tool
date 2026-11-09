@@ -961,8 +961,7 @@ export class LatexMathTool {
         continue;
       }
       const existingPosition = existing.position as
-        | { rotation?: unknown; fontSize?: unknown }
-        | undefined;
+        { rotation?: unknown; fontSize?: unknown } | undefined;
       const rotation = Number(existingPosition?.rotation ?? 0);
       const incomingRotation = Number(position?.rotation);
       if (
@@ -3801,9 +3800,7 @@ export class LatexMathTool {
     const page =
       (target?.closest(".page") as HTMLElement | null | undefined) ??
       (doc.elementFromPoint(event.clientX, event.clientY)?.closest(".page") as
-        | HTMLElement
-        | null
-        | undefined);
+        HTMLElement | null | undefined);
     if (!page) {
       return undefined;
     }
@@ -4149,8 +4146,7 @@ export class LatexMathTool {
     reader: _ZoteroTypes.ReaderInstance<"pdf">,
   ): AnnotationManager | undefined {
     return reader._internalReader?._annotationManager as
-      | AnnotationManager
-      | undefined;
+      AnnotationManager | undefined;
   }
 
   private async waitForPDFWindow(

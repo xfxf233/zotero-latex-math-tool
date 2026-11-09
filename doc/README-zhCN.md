@@ -28,9 +28,8 @@ npm run build
 npm run test:rich-text   # 纯解析/渲染单测，不需要 Zotero
 ```
 
-构建生成的 `.xpi` 位于 `.scaffold/build` 目录。`npm test` 是 Zotero 集成测试
-（`test/integration/`），需要 Zotero 二进制和本地 `.env`。测试目录结构与开发文档见
-[dev-notes/README.md](../dev-notes/README.md)。
+构建生成的 `.xpi` 位于 `.scaffold/build` 目录。测试是纯解析/渲染单测，不需要 Zotero。
+测试目录结构与开发文档见 [dev-notes/README.md](../dev-notes/README.md)。
 
 ## 兼容性
 

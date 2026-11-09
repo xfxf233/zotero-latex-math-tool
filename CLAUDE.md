@@ -52,7 +52,7 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
      `hideRawMathElements` 改为 **data-id 优先**、无 id 才回退 value 匹配。基本路径已被用户
      真机验证；**后续再动这四方法仍要做完整回归**。出现“原始 `$...$` + overlay 同时显示”时，
      优先查 data-id 匹配。
-2. 本沙箱**没有 Zotero**：`npm test`（集成测试）跑不了；运行时行为一律靠用户真机验证。
+2. 本沙箱**没有 Zotero**，也没有集成测试；运行时行为一律靠用户真机验证。
    可以跑 `npm run build`、`tsc --noEmit`、eslint、prettier、`npm run test:rich-text`。
 
 ## 关键规则（必须记住）
@@ -93,7 +93,7 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 
 ## 文档索引
 
-- [dev-notes/README.md](dev-notes/README.md)：开发文档索引 + 单测/集成测试怎么跑
+- [dev-notes/README.md](dev-notes/README.md)：开发文档索引 + 单测怎么跑
 - [dev-notes/rich-text-spec.md](dev-notes/rich-text-spec.md)：混合文本功能规格与实现状态
 - [dev-notes/zotero-notes.md](dev-notes/zotero-notes.md)：Zotero 运行时事实（tag、comment、data-id、
   manager、字体等）
@@ -110,8 +110,6 @@ npm run test:rich-text        # 纯解析/渲染单测，不需要 Zotero
 ```
 
 - 修改后必须过以上命令。
-- `npm test` 是 Zotero 集成测试（`test/integration/`），需要 Zotero 二进制和 `.env`，
-  本沙箱无法运行。
 - 需要真机 DOM/日志：`npx zotero-plugin build --dev` → 手动打 zip → 装进 Zotero →
   帮助 > 调试日志 > 启用日志 → 搜 `render diagnostics`。production 构建会短路诊断代码，
   抓完重新 `npm run build`。

@@ -42,9 +42,9 @@ npm run test:rich-text   # pure parser/renderer tests, no Zotero required
 The build command runs `zotero-plugin build` and `tsc --noEmit`. The packaged
 `.xpi` is emitted by `zotero-plugin-scaffold` under `.scaffold/build`.
 
-`npm test` runs the Zotero integration tests (`test/integration/`) and requires
-a Zotero binary plus a local `.env`. See [dev-notes/README.md](dev-notes/README.md)
-for the test layout and development documentation.
+Tests live in `test/unit` and are pure parser/renderer checks; they run without
+Zotero. See [dev-notes/README.md](dev-notes/README.md) for the test layout and
+development documentation.
 
 ## Zotero Compatibility
 

@@ -14,22 +14,15 @@
 
 ## 测试
 
-两类测试分开，避免互相干扰：
+项目里只有一个单测文件，不需要 Zotero：
 
 - **纯逻辑单测**：`npm run test:rich-text`
   - 位置：`test/unit/richText.test.ts`
   - 运行环境：Node 22 `--experimental-strip-types`，不需要 Zotero
   - 覆盖：旧前缀、`$` / `$$`、转义、美元金额误判、块级/行内、tag 识别、HTML 转义
-- **Zotero 集成测试**：`npm test`
-  - 位置：`test/integration/`
-  - 运行环境：需要 Zotero 二进制与 `.env`，本沙箱跑不了
-  - 由 `zotero-plugin test` 在 Zotero 里执行 Mocha
 
-为什么分开：`zotero-plugin test` 默认扫描 `test/**/*.{spec,test}.[jt]s` 并在 Zotero
-进程里运行；纯 Node 的 `node:test` 文件混在 `test/` 下会被它误加载。因此：
-
-- `zotero-plugin.config.ts` 的 `test.entries` 只指向 `test/integration`；
-- `test/unit` 由 `npm run test:rich-text` 显式运行。
+原来的 Zotero 集成测试已移除：它需要本地 Zotero 二进制与 `.env`，CI 无法运行，
+而唯一断言（插件实例存在）在装上插件时一眼可见。
 
 ## 构建与静态检查
 

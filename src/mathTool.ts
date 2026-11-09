@@ -255,7 +255,7 @@ export class LatexMathTool {
       // reader 关闭过程中 runtime.win 可能是已销毁的死 wrapper，访问其属性会
       // 抛 NS_ERROR、中断整个清理循环，导致其余 runtime 的监听器残留。任何
       // 死 wrapper 访问都短路跳过该 runtime（其自身清理由 disposeRuntime 兜底）。
-      let matches = false;
+      let matches: boolean;
       try {
         matches =
           win === runtime.reader._window ||

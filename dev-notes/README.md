@@ -1,7 +1,7 @@
 # 开发笔记索引
 
 > 面向开发/维护者。用户使用说明见仓库根目录 [README.md](../README.md) 与
-> [doc/README-zhCN.md](../doc/README-zhCN.md)。
+> [README_zh.md](../README_zh.md)。
 
 ## 文档
 
@@ -10,7 +10,7 @@
 | [rich-text-spec.md](rich-text-spec.md)                     | 混合文本 + `$...$` / `$$...$$` 的识别、解析、渲染、编辑器、尺寸与实现状态      |
 | [performance-optimization.md](performance-optimization.md) | PDF overlay 渲染热路径、已完成的优化、缓存与性能红线                           |
 | [zotero-notes.md](zotero-notes.md)                         | Zotero 运行时事实：comment/text、tags 结构、AnnotationManager、data-id、字体等 |
-| [../CLAUDE.md](../CLAUDE.md)                               | 跨会话交接：当前分支、红线、关键规则、验证流程                                 |
+| [../AGENTS.md](../AGENTS.md)                               | 跨会话交接：当前分支、红线、关键规则、验证流程                                 |
 
 ## 测试
 

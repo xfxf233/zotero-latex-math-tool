@@ -98,7 +98,7 @@ Zotero 9+ 插件：PDF 阅读器工具栏加 Σ，点击 PDF 位置后插入/编
 - [dev-notes/zotero-notes.md](dev-notes/zotero-notes.md)：Zotero 运行时事实（tag、comment、data-id、
   manager、字体等）
 - [dev-notes/performance-optimization.md](dev-notes/performance-optimization.md)：渲染热路径与优化
-- 用户说明：[README.md](README.md) / [doc/README-zhCN.md](doc/README-zhCN.md)
+- 用户说明：[README.md](README.md) / [README_zh.md](README_zh.md)
 
 ## 验证流程
 

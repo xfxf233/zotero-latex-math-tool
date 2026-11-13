@@ -87,7 +87,7 @@ renderMathAnnotations
   或对比 dev 模式下 Zotero 调试日志里 `render diagnostics` 行的耗时。
 - 回归是否引入：改完先 `npm run build` + eslint/prettier，再让用户重装 xpi 真机验证插入、编辑、
   双击编辑、关标签页。
-- 真机 DOM 结构（无需 `npm run start`）：`npx zotero-plugin build --dev` 构建 dev 版
+- 真机 DOM 结构：`npx zotero-plugin build --dev` 构建 dev 版
   （只产出 `addon/` 目录，不生成 xpi；需手动打包
   `(cd .scaffold/build/addon && zip -qr ../zotero-latex-math-tool.xpi .)`），装进 Zotero 后：
   **帮助 > 调试日志 > 启用日志 → 查看输出日志**，搜 `render diagnostics` 行复制 JSON。

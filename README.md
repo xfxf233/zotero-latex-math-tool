@@ -2,7 +2,7 @@
 
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
-[中文说明](doc/README-zhCN.md)
+[中文说明](README_zh.md)
 
 A Zotero plugin that adds a LaTeX math insertion tool to the PDF reader
 toolbar. Free-text annotations may mix plain text with `$...$` inline math and
@@ -10,20 +10,27 @@ toolbar. Free-text annotations may mix plain text with `$...$` inline math and
 overlay with KaTeX. Annotations created by the plugin carry a `mathtool` tag;
 native Zotero text annotations are never modified.
 
-![demo](doc/demo.png)
-
 ## Usage
 
 1. Open a PDF attachment in Zotero.
 2. Click the `Σ` toolbar button.
+
+![toolbar](assets/toolbar.png)
+
 3. Click a position on the PDF page.
 4. Type text directly. Wrap inline math in `$...$` and block equations in
    `$$...$$`. Use `\$` for a literal dollar sign. If the whole input contains
    no math, it is inserted as a block equation.
+
+![input](assets/input.png)
+
 5. Pick one of Zotero's annotation colors (yellow, red, green, blue, purple,
    magenta, orange, gray, or black) before saving. The plugin remembers the
    last color you pick and reuses it for new equations.
 6. Click `Insert` / `Save`.
+
+![effect](assets/effect.png)
+
 7. Double-click a rendered annotation to edit it later.
 
 Old `[[math:display]]` / `[[math:inline]]` annotations are still supported and
@@ -36,15 +43,9 @@ device without the plugin will show the raw source.
 ```bash
 npm install
 npm run build
-npm run test:rich-text   # pure parser/renderer tests, no Zotero required
 ```
 
-The build command runs `zotero-plugin build` and `tsc --noEmit`. The packaged
-`.xpi` is emitted by `zotero-plugin-scaffold` under `.scaffold/build`.
-
-Tests live in `test/unit` and are pure parser/renderer checks; they run without
-Zotero. See [dev-notes/README.md](dev-notes/README.md) for the test layout and
-development documentation.
+The packaged `.xpi` is emitted by `zotero-plugin-scaffold` under `.scaffold/build`.
 
 ## Zotero Compatibility
 

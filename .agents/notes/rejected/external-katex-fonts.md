@@ -1,0 +1,29 @@
+---
+status: rejected
+proposed: 2026-08
+settled: 2026-08
+---
+
+# 用外部字体文件替代 data URL 内联
+
+## 想法
+
+KaTeX 的 20 个 woff2 以 base64 内联进样式表，bundle 约 1.1MB。改成把字体作为独立文件
+打进 xpi，CSS 用 `chrome://mathtool/content/fonts/...` 引用，bundle 可降到约 751KB，
+字体还能走正常缓存。
+
+## 为什么不成立
+
+PDF 页面加载不了 `chrome://` 资源。实装后 PDF 里的公式全部退化成系统默认字体，
+渲染位置和字形都不对。原因是公式渲染发生在 PDF reader 的 iframe 文档里，那个文档不在
+插件资源协议的可见范围内。
+
+已回退到 data URL。data URL 是当前唯一被验证可行的字体携带方式。
+
+## 后续约束
+
+用户明确要求保留全部 20 个字体、不允许子集化——文献里的 `\mathfrak`、`\mathcal` 等
+需要完整字集。因此"减小字体体积"这个方向整体关闭，不要再提。
+
+除非 Zotero 提供能被 PDF 页面加载的插件资源协议（或允许在 reader 文档里注册字体），
+否则不需要重新评估。到时另开 `proposed/`，不要复用这条。

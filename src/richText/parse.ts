@@ -2,7 +2,7 @@
  * 混合文本 + 公式的纯解析层。
  *
  * 这里只做字符串到文档模型的转换，不依赖 Zotero / DOM / KaTeX，便于单测。
- * 识别规则、语法与边界见 dev-notes/rich-text-spec.md。
+ * 识别规则、语法与边界见 docs/rich-text.md。
  */
 
 export const MATH_ANNOTATION_TAG = "mathtool";

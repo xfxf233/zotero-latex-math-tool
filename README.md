@@ -4,6 +4,10 @@
 
 [中文说明](README_zh.md)
 
+A lightweight formula plugin for Zotero that lets you annotate formulas
+directly on PDF pages, so you can see your thoughts and understanding of the
+text at a glance.
+
 A Zotero plugin that adds a LaTeX math insertion tool to the PDF reader
 toolbar. Free-text annotations may mix plain text with `$...$` inline math and
 `$$...$$` display math; the plugin renders the whole annotation on the PDF
@@ -19,8 +23,12 @@ native Zotero text annotations are never modified.
 
 3. Click a position on the PDF page.
 4. Type text directly. Wrap inline math in `$...$` and block equations in
-   `$$...$$`. Use `\$` for a literal dollar sign. If the whole input contains
-   no math, it is inserted as a block equation.
+   `$$...$$`. Use `\$` for a literal dollar sign. If the input has no `$` pair
+   wrapping a formula, the whole input is inserted as a single block equation.
+   For plain-text annotations, use Zotero's native text tool instead. You can
+   later filter all equation annotations by the `mathtool` tag. Note that this
+   plugin does not support full Markdown syntax and only renders formulas; for
+   long-form Markdown notes, use Zotero's built-in note editor.
 
 ![input](assets/input.png)
 

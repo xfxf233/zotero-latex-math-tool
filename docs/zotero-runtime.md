@@ -3,10 +3,9 @@
 本插件直接依赖的 Zotero 内部行为。改数据层、隐藏/渲染链路、编辑器前先确认这里的结论
 仍然成立。
 
-**来源标注**：标 `(源码)` 的条目已对照 Zotero 10 的 `app/omni.ja` 复核；标 `(真机)` 的
+**来源标注**：标 `(源码)` 的条目已对照 Zotero 10.0.8 的 `app/omni.ja` 复核；标 `(真机)` 的
 来自真实 Zotero 观测，沙箱无法复现；标 `(推断)` 的只是由代码推得，动手前先验证。
-未标注的读本仓库代码即可确认。线上仓库只用来读注释/结构，版本可能与安装版不同，
-冲突时以 `omni.ja` 为准（见 [testing.md](testing.md#事实核实)）。
+未标注的读本仓库代码即可确认。核实命令见 [testing.md](testing.md#事实核查)。
 
 ## 标注数据
 
@@ -15,7 +14,8 @@
   补成空值，但 `color` 和 `sortIndex` 必填，缺了直接抛错。
 - 读取一律走 `getMathContent`（只读 `comment`）。不要写 `text ?? comment`：`text` 是空串
   而不是 `undefined`，`??` 不会回退，识别会失败。
-- `position.rects` 恒为单矩形；`position.fontSize` / `rotation` 对 text 标注必填。`(源码)`
+- `position.rects` 对自由文本标注是单矩形；`position.fontSize` / `rotation` 由 Zotero
+  的文本标注创建路径写入（`addAnnotation` 本身只强制 `color` / `sortIndex`）。`(源码 + 真机)`
   `updateAnnotations` 若带 `position` 而不带 `sortIndex` 会抛错。
 - pdf.js 的自由文本控件把标注 id 放在 **`data-id`**，`data-annotation-id` 为空；
   原文在 textarea / input 的 value 里。`(真机)`
@@ -33,15 +33,19 @@
 ## AnnotationManager
 
 - `manager._annotations` 是数组；`manager._unsavedAnnotations` 是 **Map**（key 为
-  annotation 对象）。`(源码)` 读取统一走 `getManagerAnnotations`。
+  annotation id，value 为待保存的 annotation 或 `null`）。`(源码)` 读取统一走
+  `getManagerAnnotations`。
 - `addAnnotation` 只传最小入参（type/color/sortIndex/pageLabel/position/comment），
   Zotero 自动补 id、日期、作者，并要求 `color` / `sortIndex` 存在。`(源码)`
 - `updateAnnotations` 的入参可能是 partial（侧栏只传 `{ id, comment }` 或
-  `{ id, tags }`）：manager 会先把它和 `_annotations` 里的旧对象合并，再返回。`(源码)`
+  `{ id, tags }`）：manager 会先把它和 `_annotations` 里的旧对象合并后写回
+  `_annotations`，方法本身返回 `void`。`(源码)`
   插件的包装必须在原方法执行后按 id 取回**合并后**的完整标注，再判断类型和是否渲染。
 - `setAnnotations` 是"外部变更"入口（reader 客户端侧改动会走到它），打开/编辑标注时
   未观察到调用。`(源码 + 真机)` 补丁仍保留，作为外部变更的兜底。
-- 标注保存经 `_triggerSaving` 去抖后写库；`_save` 是插件包装的落库入口。`(源码)`
+- 标注保存经 `_triggerSaving` 去抖后调 `_onSave` 写库。Zotero 10.0.8 的
+  AnnotationManager 没有 `_save`；插件对 `_save` 的包装只是可选的旧版兼容，10.x
+  不会触发。`(源码)`
 - `adjustTextAnnotationPosition` 由 manager 以闭包
   `(annotation, options) => view.adjustTextAnnotationPosition(...)` 持有——调用时才读
   view 上的方法。所以 patch `view.adjustTextAnnotationPosition` 能生效。`(源码)`
@@ -71,7 +75,7 @@
 - `Zotero.Annotations.COLORS` 是 `[l10n key, hex]` 对，8 色；另有
   `DEFAULT_COLOR`（单数，等于第一色）。文本/墨迹标注在右键菜单额外提供黑色
   `EXTRA_INK_AND_TEXT_COLORS = [['general-black', '#000000']]`。`(源码)`
-- `Zotero.Annotations.PROPS` 含 `color`；`updateAnnotations` / `_save` 会把它同步到
+- `Zotero.Annotations.PROPS` 含 `color`；`updateAnnotations` 触发保存时会把它同步到
   条目属性。`(源码)`
 - `Zotero.Prefs.get(name, true)` / `set(name, value, true)` 的 `global=true` 表示
   `name` 是完整 pref 名；`set` 对不存在的字符串 pref 会自动创建。`(源码)`

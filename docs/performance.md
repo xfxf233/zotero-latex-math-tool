@@ -19,7 +19,8 @@ renderIfNeeded
 ├── 无数学标注、无残留 overlay、无待清理的隐藏残留 → 直接返回（O(1) 失效键：_annotations.length）
 └── renderMathAnnotations
     ├── refreshObservedDocuments   // 只处理新出现的 page 文档
-    ├── getMathControlSets         // 每个 page 文档一次 textarea/input 扫描
+    ├── getMathAnnotations         // 取数学标注，构建 sources / ids
+    ├── getElementsWithMathText    // 每个 page 文档一次 textarea/input 扫描
     ├── renderManagerOverlays      // O(标注数 × 文档数)，主开销
     │   └── 每标注：坐标换算 + 建/复用 overlay + fit（内容尺寸缓存命中时不读布局）
     ├── hideRawMathElements        // 复用上面的控件集合
@@ -50,7 +51,8 @@ renderIfNeeded
 4. KaTeX 字体必须 data URL 内联（PDF 页面加载不了 `chrome://`）。20 个字体全部保留，
    不做子集化——文献里的 `\mathfrak` / `\mathcal` 等需要完整字集。
 5. 不要为每条标注建独立 observer 或独立样式表；overlay 复用同一个容器节点。
-6. 改动热路径后，用 dev 构建观察 `render diagnostics` 行的耗时，而非凭感觉。
+6. 改动热路径后，用 dev 构建观察 `render diagnostics` 的计数/规模变化；日志本身没有耗时
+   字段，需要耗时就在代码里临时加 `performance.now()`，不要凭感觉。
 
 ## 已知取舍
 
@@ -58,7 +60,3 @@ renderIfNeeded
   标注数量少时收益低于维护成本。
 - 标注文字、公式数量增长后，`renderManagerOverlays` 的 O(标注数 × 文档数) 是第一个
   需要再评估的点。
-
-## 度量方式
-
-见 [testing.md](testing.md)：dev 构建 + `render diagnostics` 日志。

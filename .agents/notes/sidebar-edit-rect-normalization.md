@@ -15,11 +15,9 @@ Zotero 用原始源码文本（`$...$` 原文）估算高度，再调 `adjustTex
 插件自己的编辑路径不受影响：它在调用 `updateAnnotations` 之前就改好了 manager 里的
 标注对象，不会触发 Zotero 的重排。
 
-## 目标
+目标：侧栏改完 comment 后，overlay 重渲染的同时按**当前 rect 宽度**重算高度并写回 rect。
 
-侧栏改完 comment 后，overlay 重渲染的同时按**当前 rect 宽度**重算高度并写回 rect。
-
-## 可选的实现路径
+## 方案
 
 1. **渲染后测量再写 rect**：`updateAnnotations` 包装里识别 comment 变化 → 等 overlay
    重建完成 → 测量 rich 内容高度 → 写回 rect。时序最直接，但要确认写回 rect 不会再次

@@ -8,11 +8,12 @@ A lightweight formula plugin for Zotero that lets you annotate formulas
 directly on PDF pages, so you can see your thoughts and understanding of the
 text at a glance.
 
-A Zotero plugin that adds a LaTeX math insertion tool to the PDF reader
+This Zotero plugin adds a LaTeX math insertion tool to the PDF reader
 toolbar. Free-text annotations may mix plain text with `$...$` inline math and
 `$$...$$` display math; the plugin renders the whole annotation on the PDF
 overlay with KaTeX. Annotations created by the plugin carry a `mathtool` tag;
-native Zotero text annotations are never modified.
+native Zotero text annotations without the tag or a legacy prefix are never
+modified.
 
 ## Usage
 
@@ -23,10 +24,11 @@ native Zotero text annotations are never modified.
 
 3. Click a position on the PDF page.
 4. Type text directly. Wrap inline math in `$...$` and block equations in
-   `$$...$$`. Use `\$` for a literal dollar sign. If the input has no `$` pair
-   wrapping a formula, the whole input is inserted as a single block equation.
-   For plain-text annotations, use Zotero's native text tool instead. You can
-   later filter all equation annotations by the `mathtool` tag. Note that this
+   `$$...$$`. Use `\$` for a literal dollar sign. If the input does not parse as
+   a formula, the whole input is inserted as a single block equation. For
+   plain-text annotations, use Zotero's native text tool instead. Plugin-created
+   annotations can be filtered by the `mathtool` tag; legacy annotations get
+   the tag after they are edited and still contain a formula. Note that this
    plugin does not support full Markdown syntax and only renders formulas; for
    long-form Markdown notes, use Zotero's built-in note editor.
 
@@ -46,6 +48,10 @@ are migrated to the new syntax when edited. The source is stored as plain
 annotation text (the `comment` field), so it syncs with Zotero normally; a
 device without the plugin will show the raw source.
 
+## Installation
+
+Download the latest xpi file from [Releases](https://github.com/xfxf233/zotero-latex-math-tool/releases). In Zotero, go to Tools -> Plugins, click the gear button, select `Install Plugin From File`, and load the downloaded xpi file.
+
 ## Development
 
 ```bash
@@ -57,15 +63,16 @@ The packaged `.xpi` is emitted by `zotero-plugin-scaffold` under `.scaffold/buil
 
 ## Zotero Compatibility
 
-The add-on manifest targets Zotero 9 and later:
+The add-on manifest targets Zotero 9–10.x:
 
 ```json
 "strict_min_version": "9.0",
 "strict_max_version": "10.*"
 ```
 
-Zotero 7 and 8 may also work but are not tested. To try, change the
-`strict_min_version` field in `addon/manifest.json` and re-package the `.xpi`.
+Zotero 11 is outside `strict_max_version`; Zotero 7 and 8 may also work but are
+not tested. To try a version outside the range, change the corresponding
+version field in `addon/manifest.json` and re-package the `.xpi`.
 
 ## Acknowledgements
 

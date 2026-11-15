@@ -1,8 +1,8 @@
 # 架构
 
-Zotero 9+ 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 `mathtool` tag 的自由文本标注
-渲染成 KaTeX overlay（文本 + `$...$` 行内公式 + `$$...$$` 块级公式），并隐藏页面上的
-原始源码。双击渲染结果可再次编辑。
+Zotero 9–10.x 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 `mathtool` tag 或旧前缀的
+自由文本标注渲染成 KaTeX overlay（文本 + `$...$` 行内公式 + `$$...$$` 块级公式），并隐藏
+页面上的原始源码。双击渲染结果可再次编辑。
 
 ## 运行形态
 
@@ -11,7 +11,8 @@ Zotero 9+ 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 `matht
   按 reader 维护 runtime（`WeakMap` + `Set`），不依赖任何全局单例状态。
 - 每个 PDF reader 有自己的 iframe 窗口（`reader._window`）。PDF 页面、标注层、工具栏
   **在同一个文档**里；overlay 就挂在这个文档上。
-- overlay 的坐标系是 PDF 单位（pt，不随缩放变化），渲染时 `transform: scale(zoom)` 跟随。
+- 标注 rect 存的是 PDF 单位（pt，不随缩放变化）；overlay 容器按当前页 viewport 换算成
+  CSS px 定位，内部内容按 PDF 单位排版后再 `transform: scale(zoom)` 跟随缩放。
 
 ## 启动与 reader 生命周期
 
@@ -34,7 +35,7 @@ Zotero 9+ 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 `matht
 | `src/richText/parse.ts`                  | 纯解析：tag/legacy 前缀识别、`$` 语法 → `RichDocument`。不依赖 Zotero / DOM / KaTeX。            |
 | `src/richText/render.ts`                 | `RichDocument` → HTML 字符串；文本先转义，KaTeX 渲染函数由调用方注入。                           |
 | `src/katexFonts.ts`                      | 20 个 KaTeX woff2 以 data URL 形式 import。                                                      |
-| `src/styles.css`                         | overlay、编辑器、按钮的样式（构建时注入）。                                                      |
+| `src/styles.css`                         | overlay、编辑器、按钮的样式（打包进 bundle，运行时注入文档）。                                   |
 | `src/addon.ts` / `hooks.ts` / `index.ts` | 插件实例、生命周期钩子、全局注册。                                                               |
 | `src/utils/`                             | 最小化的 `ztoolkit`（`getGlobal`）与 FTL 本地化初始化。                                          |
 | `addon/`                                 | `manifest.json`、`bootstrap.js`、`locale/*/addon.ftl`、图标。                                    |
@@ -42,23 +43,23 @@ Zotero 9+ 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 `matht
 
 ## 插入与编辑流程
 
-Σ 按钮 → `activateNativeTextInsertMode`：切到 Zotero 原生文本工具，装上捕获期 click 监听
-（`installDirectPDFClickHandlers`），并用 `startToolMonitor` 监视工具状态（基线 + 连续 2 次
-偏离判定）；用户切走工具即取消本次插入。
+Σ 按钮 → `activateNativeTextInsertMode`：把阅读器工具切到 `pointer`，装上捕获期
+`pointerup` / `click` 监听（`installDirectPDFClickHandlers`），并用 `startToolMonitor`
+监视工具状态（基线 + 连续 2 次偏离判定）；用户切走工具即取消本次插入。
 
-用户点击页面后，按谁先建出标注分两条路径：
+用户点击页面后，插件在捕获期接管点击，用点击位置调 `openEditorInDocument`，保存时
+`createAnnotationWithManager`。标注管理器补丁里的 `captureNativeTextAnnotation` 是兜底：
+如果 Zotero 原生文本工具仍先建出了标注（例如工具状态竞态），就在 `addAnnotation` 返回时
+`captureNativeTextAnnotation` → `completeNativeMathAnnotation` 打开编辑器，保存时走
+`updateManagerAnnotation`。
 
-- **Zotero 先建标注**：标注管理器补丁在 `addAnnotation` 返回时 `captureNativeTextAnnotation`
-  → `completeNativeMathAnnotation` 打开编辑器。
-- **插件自己接管点击**：`installDirectPDFClickHandlers` 直接用点击位置调
-  `openEditorInDocument`，保存时 `createAnnotationWithManager`。
+保存路径：`normalizeEditorSource`（新建时解析不出公式就整段包成 `$$...$$`）→ 在编辑器
+iframe 内测量内容尺寸 → 写 `position.rects` → 新建或更新标注（内容写 `comment`，tag 补
+`{ name: "mathtool" }`，颜色和 rect 按需更新）→ 触发渲染。
 
-保存路径：`normalizeEditorSource`（内容里解析不出公式就整段包成 `$$...$$`）→ 在编辑器
-iframe 内测量内容尺寸 → 写 `position.rects` → 新建或更新标注（只写 `comment` 和
-`{ name: "mathtool" }`）→ 关闭编辑器 → 触发渲染。
-
-双击 overlay → `installRenderedFormulaDblClickHandler` → `openEditorInDocument`（编辑已有）
-→ `updateManagerAnnotationByID`。
+单击已选中的 overlay（双击的第二下）→ `installRenderedFormulaDblClickHandler` 的 click
+分支 → `openEditorInDocument`（编辑已有）→ `updateManagerAnnotationByID`。`dblclick`
+只拦截原生编辑，不直接打开编辑器。
 
 ## 渲染链路
 
@@ -79,11 +80,12 @@ iframe 内测量内容尺寸 → 写 `position.rects` → 新建或更新标注�
 
 全部是包装/监听，不改 Zotero 源码。
 
-| 位置                                                                                 | 目的                                                                                                                                                              |
-| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `annotationManager.addAnnotation` / `_save` / `setAnnotations` / `updateAnnotations` | 捕获新建的标注、在 partial 更新后重新判断是否需要渲染、清理残留隐藏。                                                                                             |
-| `_primaryView.adjustTextAnnotationPosition`                                          | 拖动左右边框后按渲染内容返回 rect，并绕过 Zotero 对单行文本按源码回收宽度（上限 300pt）的规则。manager 持有的是调用时才读 view 方法的闭包，所以 patch view 生效。 |
-| `reader.uninit`                                                                      | reader 关闭时清理 runtime。                                                                                                                                       |
-| `renderToolbar` 事件                                                                 | 注入并重定位 Σ 按钮。                                                                                                                                             |
-| overlay 上的 `dblclick`                                                              | 打开编辑器。                                                                                                                                                      |
-| PDF iframe 内捕获期 `click`                                                          | Σ 模式下的插入位置。                                                                                                                                              |
+| 位置                                                                              | 目的                                                                                                                                                              |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `annotationManager.addAnnotation` / `setAnnotations` / `updateAnnotations`        | 捕获新建的标注、在 partial 更新后重新判断是否需要渲染、清理残留隐藏。                                                                                             |
+| `annotationManager._save`（可选兼容）                                             | Zotero 10.x 不存在，包装不会触发；仅为旧版保留。                                                                                                                  |
+| `_primaryView` / `_secondaryView` / `_lastView` 的 `adjustTextAnnotationPosition` | 拖动左右边框后按渲染内容返回 rect，并绕过 Zotero 对单行文本按源码回收宽度（上限 300pt）的规则。manager 持有的是调用时才读 view 方法的闭包，所以 patch view 生效。 |
+| `reader.uninit`                                                                   | reader 关闭时清理 runtime。                                                                                                                                       |
+| `renderToolbar` 事件                                                              | 注入并重定位 Σ 按钮。                                                                                                                                             |
+| overlay 上的 `dblclick`                                                           | 拦截原生编辑；打开编辑器由已选中标注的 click 分支负责。                                                                                                           |
+| PDF iframe 内捕获期 `click`                                                       | Σ 模式下的插入位置。                                                                                                                                              |

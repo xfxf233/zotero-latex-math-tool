@@ -2,8 +2,8 @@
 
 ## 环境边界
 
-本仓库的开发环境**没有 Zotero**，也没有集成测试。能自动验证的只有构建、类型、lint 和
-纯内容层单测；运行时行为（DOM、几何、视觉）必须由人在真实 Zotero 里验证。
+本仓库**没有可自动运行的 Zotero 测试环境**，也没有集成测试。能自动验证的只有构建、类型、
+lint 和纯内容层单测；运行时行为（DOM、几何、视觉）必须由人在真实 Zotero 里验证。
 
 ## 命令
 
@@ -26,10 +26,10 @@ npm run test:rich-text # 纯解析/渲染单测，不需要 Zotero
 覆盖：旧前缀识别、`$` / `$$`、转义、美元金额误判、块级/行内、tag 判断、HTML 转义。
 纯解析层（`src/richText/`）不依赖 Zotero / DOM / KaTeX，新增解析规则时应优先在这里补用例。
 
-## 事实核实
+## 事实核查
 
-取事实的优先级见 [AGENTS.md](../AGENTS.md#事实与证据)：仓库代码 > 安装版源码 > GitHub >
-真机，冲突时靠前的为准。这里只放取证命令。
+事实的优先级：仓库代码 > 安装版源码 > 真机，
+冲突时告知用户。
 
 安装版 Zotero 在 `E:\zotero\app\omni.ja`，版本看 `E:\zotero\app\application.ini`。包内是
 构建产物，与用户实测的版本一致：
@@ -42,25 +42,8 @@ tar -xf E:\zotero\app\omni.ja -C <临时目录> chrome/content/zotero/xpcom/anno
 常用位置：`chrome/content/zotero/xpcom/**`（Zotero 本体逻辑）、
 `resource/reader/reader.js`（阅读器打包产物，含 AnnotationManager 与标注 DOM）。
 
-GitHub 只用来读注释和 TS/TSX 结构，`main` 是下一版开发分支，要按安装版版本取 tag：
-`https://raw.githubusercontent.com/zotero/zotero/<tag>/<path>`；阅读器源码在
-`https://github.com/zotero/reader` 的对应子模块 commit 上。
-
-真机只能证明"发生过"，不能证明"不会发生"。用 dev 构建 + `render diagnostics` 日志，或
-直接请用户看效果；记清缩放级别、PDF 和日志行。
-
-## 构建排查
-
-- `Failed to load native binding` / `Cannot find module './swc.win32-x64-msvc.node'`：
-  `@swc/core` 的平台包没装上，通常是安装脚本被拦。检查 `package.json` 的 `allowScripts`
-  （npm 11.19+ 需要显式批准），`npm install` 时按提示批准后重试。
-- `ERR_SWC_NATIVE_CACHE` / `secure cache directory ... 拒绝访问`：swc 要把原生绑定复制到
-  用户缓存目录做校验，受限环境（沙箱、部分 CI）写不进去。这是环境限制，换普通终端跑，
-  不要为此改项目配置。
-
-## 真机调试
-
-需要真实 DOM 或运行时日志时：
+需要真实 DOM 或运行时日志时，用 dev 构建 + `render diagnostics` 日志，或
+直接请用户看效果。
 
 ```bash
 npx zotero-plugin build --dev
@@ -71,8 +54,8 @@ npx zotero-plugin build --dev
 
 装进 Zotero → 帮助 > 调试日志 > 启用日志 → 搜 `render diagnostics`。
 
-**注意**：production 构建会把 `__env__` 编成 `production`，诊断代码被短路。抓完日志要
-重新 `npm run build` 再安装。
+**注意**：抓完日志要重新 `npm run build` 再安装。production 构建会把
+`__env__` 编成 `production`，诊断代码被短路。
 
 ## 人工回归清单
 

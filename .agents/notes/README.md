@@ -64,3 +64,4 @@
 | [sidebar-edit-rect-normalization](sidebar-edit-rect-normalization.md) | proposed    | 侧栏改 comment 后按宽度重算 rect                          |
 | [wide-display-math](wide-display-math.md)                             | proposed    | 混排中超宽块级公式的处理策略                              |
 | [text-font-alignment](text-font-alignment.md)                         | proposed    | 混排文本字体/行高与原生文本标注对齐                       |
+| [cleanup-gaps](cleanup-gaps.md)                                       | proposed    | HEAD 遗留：未使用的 barrel 与 disposeRuntime 清理缺口     |

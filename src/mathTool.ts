@@ -5,7 +5,11 @@
  * `src/hooks.ts` 在 startup / shutdown / 主窗口关闭时调用。
  */
 
-import { disposeRuntime } from "./math/dispose";
+import {
+  disposeRuntime,
+  removePageResidue,
+  removeToolbarStylesFromOpenReaders,
+} from "./math/dispose";
 import { startToolbarIntegration, stopToolbarIntegration } from "./math/insert";
 import { ensureReader } from "./math/readerInit";
 import { state } from "./math/state";
@@ -23,10 +27,15 @@ export class LatexMathTool {
 
   public shutdown(): void {
     stopToolbarIntegration();
-
+    // 先让补丁短路：shutdown 之后 Zotero 仍可能回调 annotationManager 与 view 的包装
+    // （拖拽、外部更新），不能再用旧沙箱的代码改页面或标注。
+    state.alive = false;
     for (const runtime of [...state.runtimeSet]) {
+      // 插件禁用、reader 仍开着：overlay 与原文隐藏状态不会随样式表消失，必须显式清。
+      removePageResidue(runtime);
       disposeRuntime(runtime);
     }
+    removeToolbarStylesFromOpenReaders();
     state.runtimeSet.clear();
   }
 

@@ -28,8 +28,9 @@ Zotero 9–10.x 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 
    等 `_waitForReader`、`primaryView.initializedPromise`、PDF 窗口就绪 → patch 标注管理器 →
    挂 `resize` → 登记 runtime → patch `reader.uninit` → 启动 observer → 首轮渲染。
 5. 关闭：`disposeWindow`（按窗口，容忍死 wrapper）、`patchReaderUninit`（按 reader）、
-   `shutdown`（插件卸载，清理全部 runtime）。所有 observer、监听、document 引用的清理
-   都收敛在 `src/math/dispose.ts` 的 `disposeRuntime`。
+   `shutdown`（插件卸载：先让挂在 Zotero 对象上的补丁短路，再清理全部 runtime 与页面上的
+   overlay / 原文隐藏状态）。observer、监听、document 引用的清理收敛在 `src/math/dispose.ts` 的
+   `disposeRuntime`；overlay 与原文隐藏只在插件卸载时清，reader 关闭时文档本身销毁，不必再扫。
 
 ## 模块
 

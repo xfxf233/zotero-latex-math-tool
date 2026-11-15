@@ -11,6 +11,9 @@ import type { MathContent } from "../richText/parse";
 import type { AnnotationManager, ReaderRuntime } from "./types";
 
 export const state = {
+  // 插件是否仍在运行。shutdown 置 false 后，挂在 Zotero 对象上的包装函数直接调用原方法，
+  // 避免禁用/卸载后旧闭包继续改页面或标注（见 shutdown-residue 那篇 note）。
+  alive: true,
   toolbarHandler: undefined as
     _ZoteroTypes.Reader.EventHandler<"renderToolbar"> | undefined,
   runtimes: new WeakMap<_ZoteroTypes.ReaderInstance, ReaderRuntime>(),

@@ -6,12 +6,18 @@ import katexStyles from "katex/dist/katex.min.css";
 import toolStyles from "../styles.css";
 import { katexFontURLs } from "../katexFonts";
 import { STYLE_ID, TOOLBAR_STYLE_ID } from "./constants";
+import { state } from "./state";
 
 // 惰性缓存 `inlineKatexFonts` 的替换结果：输入 CSS 是模块常量，结果恒定，
 // 避免每次注入样式 / 打开编辑器都对 1.1MB 字符串重复做正则替换。
 let cachedInlineKatexCSS: string | undefined;
 
 export function injectStyles(doc: Document): void {
+  // shutdown 之后不再注入：旧闭包可能从拖拽/保存等路径再次进来，样式一回来原文
+  // 就会被重新隐藏（见 shutdown-residue 那篇 note）。
+  if (!state.alive) {
+    return;
+  }
   if (doc.getElementById(STYLE_ID)) {
     return;
   }

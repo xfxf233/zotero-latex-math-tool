@@ -20,6 +20,9 @@
 - 原生文本标注零改动：无 tag、无旧前缀就不解析、不隐藏、不接管编辑。
 - 编辑器 iframe 不出现在 `getRuntimeDocuments` 里，否则每次打开泄漏 observer。
 - 新增的 observer、监听、document 引用必须能在 `disposeRuntime` 清理。
+- 挂在 Zotero 对象上的包装入口必须判断 `state.alive`，shutdown 之后直接调用原方法；否则插件
+  禁用后的拖拽/外部更新仍会跑旧沙箱的代码（见
+  [shutdown-residue](../.agents/notes/shutdown-residue.md)）。
 
 **渲染**
 

@@ -39,6 +39,9 @@ export function patchAnnotationManager(
   manager.addAnnotation = ((
     annotation: Parameters<typeof manager.addAnnotation>[0],
   ) => {
+    if (!state.alive) {
+      return originalAddAnnotation(annotation);
+    }
     const created = originalAddAnnotation(annotation);
     invalidateMathAnnotationCache(reader);
     captureNativeTextAnnotation(reader, created);
@@ -50,6 +53,9 @@ export function patchAnnotationManager(
     manager.updateAnnotations = ((
       annotations: _ZoteroTypes.Reader.Annotation[],
     ) => {
+      if (!state.alive) {
+        return originalUpdateAnnotations(annotations);
+      }
       if (__env__ === "development") {
         state.updateAnnotationsCalls.set(
           reader,
@@ -86,6 +92,9 @@ export function patchAnnotationManager(
     manager.setAnnotations = (async (
       annotations: _ZoteroTypes.Reader.Annotation[],
     ) => {
+      if (!state.alive) {
+        return originalSetAnnotations(annotations);
+      }
       if (__env__ === "development") {
         state.setAnnotationsCalls.set(
           reader,
@@ -111,6 +120,9 @@ export function patchAnnotationManager(
       annotation: _ZoteroTypes.Reader.Annotation,
       instant?: boolean,
     ) => {
+      if (!state.alive) {
+        return originalSave(annotation, instant);
+      }
       captureNativeTextAnnotation(reader, annotation);
       invalidateMathAnnotationCache(reader);
       const result = originalSave(annotation, instant);
@@ -168,6 +180,9 @@ function patchSingleViewAdjustTextAnnotationPosition(
   }
   const original = view.adjustTextAnnotationPosition.bind(view);
   view.adjustTextAnnotationPosition = (annotation, options) => {
+    if (!state.alive) {
+      return original(annotation, options);
+    }
     try {
       const typed = annotation as _ZoteroTypes.Reader.Annotation;
       // `enableSingleLineMaxWidth` 是 Zotero 改 comment 时那条调用；保持原生

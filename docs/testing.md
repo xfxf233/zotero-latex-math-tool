@@ -21,7 +21,9 @@ npm run test:rich-text # 纯解析/渲染单测，不需要 Zotero
 
 ## 单测
 
-`test/unit/richText.test.ts`，用 Node 22+ 的 `--experimental-strip-types` 直接跑 TS，无框架。
+`test/unit/richText.test.ts`，直接 `node test/unit/richText.test.ts` 跑，无框架。类型剥离是 Node
+自带的：22.18+ / 23.6+ 默认开启，24.12 / 25.2 起转为稳定特性，不需要任何 `--experimental-*`
+参数。CI 的 Node 来自 `setup-js` 的默认值 `lts/*`，本地与 CI 走同一条路径。
 
 覆盖：旧前缀识别、`$` / `$$`、转义、美元金额误判、块级/行内、tag 判断、HTML 转义。
 纯解析层（`src/richText/`）不依赖 Zotero / DOM / KaTeX，新增解析规则时应优先在这里补用例。

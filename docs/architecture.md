@@ -39,7 +39,7 @@ Zotero 9–10.x 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 
 | `src/addon.ts` / `hooks.ts` / `index.ts` | 插件实例、生命周期钩子、全局注册。                                                               |
 | `src/utils/`                             | 最小化的 `ztoolkit`（`getGlobal`）与 FTL 本地化初始化。                                          |
 | `addon/`                                 | `manifest.json`、`bootstrap.js`、`locale/*/addon.ftl`、图标。                                    |
-| `test/unit/richText.test.ts`             | 纯内容层单测（Node `--experimental-strip-types`，不需要 Zotero）。                               |
+| `test/unit/richText.test.ts`             | 纯内容层单测（Node 内置类型剥离直接跑 `.ts`，不需要 Zotero）。                                   |
 
 ## 插入与编辑流程
 

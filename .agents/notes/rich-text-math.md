@@ -39,9 +39,10 @@ settled: 2026-10
 并把 `text` 清空（dev diagnostics 仍会直接读 `annotation.comment`，仅调试用）。
 这样在没有插件的设备上同步过去就是可读的源码。
 
-**落到**：纯内容层 `src/richText/parse.ts`、`render.ts`，单测在
-`test/unit/richText.test.ts`；Zotero 集成在 `src/mathTool.ts` 的识别、overlay 构建、
-编辑器、尺寸测量。
+**落到**：纯内容层 `src/richText/parse.ts`、`render.ts`、`layout.ts`，单测在
+`test/unit/richText.test.ts`；Zotero 集成在 `src/math/`（`annotationData.ts` 识别与解析缓存、
+`overlay.ts` / `renderer.ts` 渲染、`editor.ts` 编辑器、`measure.ts` / `geometry.ts` 尺寸
+与坐标）。
 
 ## 考虑过但没选的
 

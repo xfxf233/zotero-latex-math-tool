@@ -55,6 +55,7 @@
 
 | Note                                                                  | 状态        | 一句话                                                    |
 | --------------------------------------------------------------------- | ----------- | --------------------------------------------------------- |
+| [module-split](module-split.md)                                       | implemented | mathTool.ts 拆成门面 + src/math/ 模块 + 集中 state        |
 | [rich-text-math](rich-text-math.md)                                   | implemented | 标注里混写文本与公式的识别、渲染、编辑器方案              |
 | [rect-fit-content](rect-fit-content.md)                               | implemented | 纯公式 rect 按 fit-content 测量，拖动时接管 Zotero 的重排 |
 | [render-hot-path](render-hot-path.md)                                 | implemented | 渲染热路径的短路、扫描与缓存策略                          |

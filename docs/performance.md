@@ -10,7 +10,7 @@
 - 窗口 `resize`、`pdfViewer.currentScale` 变化（后者由 observer 内检测，rAF 一帧一次
   同步 overlay 位置）。
 - 翻页、缩放、编辑标注、拖动边框都会让 pdf.js 重建标注层，因此最终都会走一遍渲染。
-- 插入、编辑、删除路径额外安排一次 750ms 的兜底渲染（同一句柄，连续调用合并）。
+- 插入、编辑路径额外安排一次 750ms 的兜底渲染（同一句柄，连续调用合并）。
 
 ## 热路径
 
@@ -29,6 +29,9 @@ renderIfNeeded
 
 ## 缓存
 
+渲染链路用到的缓存都在 `src/math/state.ts` 的 `state` 里（模块内部私有缓存不在此列，如
+`src/math/styles.ts` 的 KaTeX CSS 内联结果）。键与失效规则如下：
+
 | 缓存                      | 键 / 失效                                   | 作用                                                      |
 | ------------------------- | ------------------------------------------- | --------------------------------------------------------- |
 | `mathContentCache`        | `comment` 原文，上限 200                    | 跳过重复解析                                              |
@@ -40,6 +43,12 @@ renderIfNeeded
 
 尺寸类缓存只在 `document.fonts.status === "loaded"` 时读写，避免把未加载字体的错误
 指标固化下来。所有 `WeakMap` 缓存在元素被丢弃后自动回收，不需要手动清理。
+
+## 代码位置
+
+- 调度、observer 与每轮渲染：`src/math/renderer.ts`；overlay 构建与 fit：`src/math/overlay.ts`；
+  原文隐藏：`src/math/hiding.ts`；标注解析缓存与 `readerHasMath`：`src/math/annotationData.ts`。
+- 改热路径后先对照本页的短路条件与缓存失效规则，再跑 [testing.md](testing.md) 的回归清单。
 
 ## 约束
 

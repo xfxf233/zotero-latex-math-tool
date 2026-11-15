@@ -15,7 +15,8 @@
 
 tag 读取兼容 `{ name }` / `{ tag }` / 字符串三种形态和单对象形态；**写入只允许**
 `{ name: "mathtool" }`（阅读器内部格式，Zotero 保存时 `saveFromJSON` 会转成条目 tag，
-读回时 `toJSON` 再转回 `{ name }`）。
+读回时 `toJSON` 再转回 `{ name }`；源码见
+[zotero-runtime.md](zotero-runtime.md#标注-tags)）。
 
 ## 语法
 
@@ -63,9 +64,13 @@ $$x^2 \ge 0$$
 `mathCount` 是公式节点数，为 0 时不算数学标注。首尾空白在解析前去掉；只含空白、且
 紧邻块级公式的文本节点在解析阶段丢弃。
 
+`src/richText/layout.ts` 在内容模型上做两个纯函数判断：内容是否只有一个公式（决定走
+fit-content 还是 rich 布局），以及 legacy 前缀内容如何迁移成 `$` / `$$` 语法。
+两者都不依赖 Zotero / DOM，单测在 `test/unit/richText.test.ts`。
+
 ## 渲染
 
-- 一条标注一个 overlay 元素，挂在该页的 page overlay 容器下。
+- 一条标注一个 overlay 元素，挂在该页的 page overlay 容器下（`src/math/overlay.ts`）。
 - **纯公式**（只有公式节点、没有普通文本，含 legacy 标注）走 `fit-content` +
   `fitFormulaToOverlay`：框贴合公式，超宽时整体等比缩小。
 - **文本 + 公式混排**走 rich 布局：文本段是块级容器，行内公式是其中的 inline span，
@@ -77,6 +82,8 @@ $$x^2 \ge 0$$
 - 内容变化才重建 `innerHTML`；稳态渲染只更新坐标和缩放。
 
 ## 编辑器
+
+编辑器实现与保存流程在 `src/math/editor.ts`：
 
 - 一个输入框 + 实时预览（输入防抖约 100ms）。
 - 新建：内容能解析出公式就按混合文本保存；解析不出公式则整段包成 `$$...$$`。
@@ -91,12 +98,17 @@ $$x^2 \ge 0$$
 编辑器只提供 Zotero 内置标注调色板：运行时读 `Zotero.Annotations.COLORS`
 （`[l10n key, hex]` 对，8 色），末尾追加黑色（与 Zotero 的
 `EXTRA_INK_AND_TEXT_COLORS` 一致），共 9 色，顺序与阅读器右键菜单一致。旧版 Zotero
-回退 `DEFAULT_COLORS`，再兜底 8 色。
+回退 `DEFAULT_COLORS`，再兜底 8 色（源码见
+[zotero-runtime.md](zotero-runtime.md#颜色与偏好)）。
 编辑已有标注时，只有用户点色点才写 `annotation.color` 并记到 pref
-`lastAnnotationColor`；新建标注会写入编辑器当前色。只改正文不碰颜色（避免覆盖外部
-导入的非十六进制颜色）。
+`extensions.zotero.mathtool.lastAnnotationColor`（`prefsPrefix` 见 `package.json`）；新建
+标注会写入编辑器当前色。只改正文不碰颜色（避免覆盖外部
+导入的非十六进制颜色）。调色板与偏好的实现见 `src/math/colors.ts`。
 
 ## rect 几何
+
+测量与 rect 写回在 `src/math/measure.ts`，坐标换算在 `src/math/geometry.ts`，拖动时接管
+Zotero 重排在 `src/math/patches.ts`。
 
 - 新建：先按点击位置放一个 220×48 的 viewport px 默认 rect（100% 缩放时即 220×48pt），
   保存时再按内容测量覆盖。

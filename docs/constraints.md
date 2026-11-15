@@ -31,6 +31,19 @@
 - 测量在编辑器 iframe 内完成；在 reader 文档里测必须用 `layoutScale` 换算
   （CSS px = PDF 单位 × viewport scale），否则高缩放下换行和高度都会错。
 
+**结构**
+
+- 跨模块共享的可变状态只放在 `src/math/state.ts` 的 `state` 里；模块之间只通过函数
+  调用协作，不互相持有实例引用。新增 reader 级状态用 WeakMap/WeakSet 作键。
+- import 方向单向：入口/生命周期 → 补丁/渲染 → 数据/几何/编辑器/工具。底层模块不得
+  反向 import `mathTool.ts`、`patches.ts`、`readerInit.ts`。`insert.ts` 与
+  `readerInit.ts` 的互需用注入 `ensureReader` 回调解决，不要直接互相 import。
+- 需要显式释放的资源（observer、DOM 监听、定时器、注入样式）在
+  `src/math/dispose.ts` 的 `disposeRuntime` 清理；只影响单个元素的临时资源用 WeakMap
+  缓存，元素销毁后自动回收。
+- 模块只 export 跨模块或测试需要的函数/常量，内部函数保持私有，避免模块边界退化。原因
+  见 [module-split](../.agents/notes/module-split.md)。
+
 ## 已定方案
 
 - 纯公式走 `fit-content`，混排走 rich。既有标注都是纯公式，换布局会让历史标注视觉变化、
@@ -45,3 +58,5 @@
   见 [external-katex-fonts](../.agents/notes/external-katex-fonts.md)。
 - 新建内容解析不出公式时整段当块级公式，保留"点开就写 latex"的习惯，见
   [rich-text-math](../.agents/notes/rich-text-math.md)。
+- 拆分后的模块边界与 `state` 集中式共享状态是当前形态，理由与取舍见
+  [module-split](../.agents/notes/module-split.md)。

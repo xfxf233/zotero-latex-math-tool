@@ -8,6 +8,10 @@ import {
   parseRichDocument,
 } from "../../src/richText/parse.ts";
 import type { RichDocument } from "../../src/richText/parse.ts";
+import {
+  getSingleFormula,
+  legacyToRichSource,
+} from "../../src/richText/layout.ts";
 import { renderRichDocument } from "../../src/richText/render.ts";
 
 function rich(source: string): RichDocument {
@@ -232,4 +236,48 @@ test("tagged annotation without formulas is not renderable", () => {
     tags: [{ name: "mathtool" }],
   });
   assert.equal(content?.kind, "rich");
+});
+
+test("single formula layout only for pure formula content", () => {
+  const inline = parseMathContent("$x$");
+  assert.ok(inline);
+  assert.deepEqual(getSingleFormula(inline), { latex: "x", mode: "inline" });
+
+  const display = parseMathContent("$$x$$");
+  assert.ok(display);
+  assert.deepEqual(getSingleFormula(display), { latex: "x", mode: "display" });
+
+  const mixed = parseMathContent("设 $x$ 为变量");
+  assert.ok(mixed);
+  assert.equal(getSingleFormula(mixed), undefined);
+
+  const twoFormulas = parseMathContent("$$x$$ $$y$$");
+  assert.ok(twoFormulas);
+  assert.equal(getSingleFormula(twoFormulas), undefined);
+});
+
+test("legacy content counts as a single formula", () => {
+  const display = parseMathContent("[[math:display]] x^2");
+  assert.ok(display);
+  assert.deepEqual(getSingleFormula(display), {
+    latex: "x^2",
+    mode: "display",
+  });
+
+  const inline = parseMathContent("[[math:inline]] y");
+  assert.ok(inline);
+  assert.deepEqual(getSingleFormula(inline), { latex: "y", mode: "inline" });
+});
+
+test("legacy content migrates to dollar syntax", () => {
+  assert.equal(
+    legacyToRichSource({ latex: "x^2", mode: "display" }),
+    "$$\nx^2\n$$",
+  );
+  assert.equal(legacyToRichSource({ latex: "x", mode: "inline" }), "$x$");
+  // 旧行内公式里出现换行时按块级迁移，避免新解析器把行内公式当成未闭合。
+  assert.equal(
+    legacyToRichSource({ latex: "a\nb", mode: "inline" }),
+    "$$\na\nb\n$$",
+  );
 });

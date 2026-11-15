@@ -3,76 +3,78 @@ status: proposed
 proposed: 2026-11
 ---
 
-# disposeRuntime 的清理缺口与初始化竞态
+# reader 生命周期缺口：shutdown 后仍在生效的残留
 
 ## 问题
 
 `disposeRuntime`（[dispose.ts](../../src/math/dispose.ts)）是 reader 关闭、窗口关闭、插件卸载三条路径
 唯一的清理点（[architecture.md](../../docs/architecture.md#L19-L32)）；
 [constraints.md](../../docs/constraints.md#L41-L43) 要求注入样式、监听、observer、定时器都在这里释放。
-以下缺口在拆分前就存在（`e564092^` 的单文件版本逐条核对过），重构只承诺行为不变，没有顺带修。
+以下缺口在拆分前就存在（`e564092^` 的单文件版本逐条核对过），重构只承诺行为不变；其中前两条已在
+2026-11-15 真机确认后果。
 
-1. **工具栏样式没有移除。** `TOOLBAR_STYLE_ID` 由 `injectToolbarStyles` 注入工具栏文档
-   （[insert.ts](../../src/math/insert.ts#L96-L102)，`renderToolbar` 时触发），dispose 只按 `STYLE_ID`
-   删样式（[dispose.ts](../../src/math/dispose.ts#L65-L67)）。插件禁用、reader 仍开着时，这个 style
-   节点留在 reader 文档里（工具栏与 PDF 页面同文档，[architecture.md](../../docs/architecture.md#L14-L15)）。
-   影响很小：只匹配 Σ 按钮的 class，按钮已删；reader 关闭时文档一起销毁；同版本重新启用时
-   `injectToolbarStyles` 见 id 就早退，看不出差别。它主要违反上面那条约束，并让"改工具栏 CSS 后禁用
-   再启用"的开发流程继续用旧样式。
-
-2. **`renderTimer` 没有复位。** dispose 只 `clearTimeout`，没像 `repeatTimer` / `syncRAF` 那样置
-   `undefined`。纯一致性缺口，`runtime.disposed` 挡住重复清理，没有已知可观测问题。
-
-3. **初始化没有取消语义（唯一有用户可见后果的一项）。** `initializeReaderRuntime` 在三个 await 之后
-   都不检查"插件是否已 shutdown、reader 是否已关闭"（[readerInit.ts](../../src/math/readerInit.ts#L42-L80)）。
-   shutdown 只清 `runtimeSet`，不取消 `ensureReaderPromises` 里的 in-flight 初始化
+1. **补丁在 shutdown 之后仍会执行（真机，最严重）。** `annotationManager` 的增改包装、`view` 的
+   `adjustTextAnnotationPosition` 包装都没有卸载点（[patches.ts](../../src/math/patches.ts)），dispose
+   只把 runtime 标记为已释放。真机现象：禁用插件后拖动原始文本框，插件仍进入测量路径并重新注入
+   样式表，于是原文重新被隐藏、旧 overlay 在原位"复活"，且不再跟随文本框；拖动产生的 rect 还可能
+   被包装改写。每次启用会再叠一层包装（推断），反复开关会累积无用的测量调用，旧闭包也让旧沙箱
+   常驻内存。
+2. **页面残留不清理（真机）。** dispose 不删 overlay 节点、不撤 `RAW_HIDDEN_CLASS`，只移除样式表。
+   真机现象：禁用后 overlay 失去样式、塌到页面左上角压住正文；原文在标注框位置露出，但框是按渲染
+   尺寸定的，长源码会被裁（只看到开头的 `$$`）。重开 PDF 才恢复。
+3. **初始化没有取消语义。** `initializeReaderRuntime` 在三个 await 之后都不检查"插件是否已 shutdown、
+   reader 是否已关闭"（[readerInit.ts](../../src/math/readerInit.ts#L42-L80)）；shutdown 只清
+   `runtimeSet`，不取消 `ensureReaderPromises` 里的 in-flight 初始化
    （[mathTool.ts](../../src/mathTool.ts#L24-L31)）。两种触发场景后果不同：
-
    - **禁用/卸载时的 in-flight（推断）**：shutdown 之后晚到的初始化仍会登记 runtime、挂 observer、
-     注入样式，并在 50ms 后跑首轮渲染。插件已经停用，公式仍被渲染、原文仍被隐藏，直到 reader 关闭
-     （晚装的 `uninit` 包装届时会兜底清理）。这是用户能看到的。
+     注入样式，并跑首轮渲染。插件已经停用，公式仍被渲染、原文仍被隐藏，直到 reader 关闭（晚装的
+     `uninit` 包装届时会兜底清理）。
    - **初始化中关闭 reader**：`reader.uninit` 的包装是初始化最后一步才装的
      （[patches.ts](../../src/math/patches.ts#L371-L394)），关闭发生在之前时不会走 dispose。之后
      `waitForPDFWindow` 多半取不到窗口，最可能是空转 15 秒后抛 "PDF iframe window is not ready"、
      日志多一条错误，并让 `ensureReaderPromises`（普通 Map）暂时留住已关闭的 reader；是否还会登记
      孤儿 runtime 取决于 uninit 期间窗口何时失效，需真机确认（推断）。
-
-4. **候选：overlay DOM 与原文隐藏状态也不在清理范围（推断，待真机确认）。** dispose 不删
-   `.zotero-latex-math-manager-render` / `.zotero-latex-math-page-overlay`，也不撤 `RAW_HIDDEN_CLASS`；
-   插件禁用时样式表没了、overlay 元素还在，页面里可能出现重复或错位的渲染文本。真机确认后再决定
-   并入本篇还是一篇单列。
+4. **工具栏样式不移除。** `TOOLBAR_STYLE_ID` 由 `injectToolbarStyles` 注入工具栏文档
+   （[insert.ts](../../src/math/insert.ts#L96-L102)），dispose 只按 `STYLE_ID` 删样式
+   （[dispose.ts](../../src/math/dispose.ts#L65-L67)）。影响很小：只匹配 Σ 按钮的 class，按钮已删；
+   同版本重新启用时 `injectToolbarStyles` 见 id 就早退，看不出差别。它主要违反上面那条约束。
+5. **`renderTimer` 不复位。** dispose 只 `clearTimeout`，没像 `repeatTimer` / `syncRAF` 那样置
+   `undefined`。纯一致性缺口，`runtime.disposed` 挡住重复清理，没有已知可观测问题。
 
 ## 方案
 
-1. 工具栏样式：在 dispose 现有的文档循环里一并删 `TOOLBAR_STYLE_ID`；shutdown 再多走一遍
-   `Zotero.Reader._readers`，对仍打开的 reader 取 `state.readerDocs` 里的文档删一次，覆盖"样式已注入、
-   runtime 还没建"的 reader（这类没有 runtime 可走）。不新建可枚举的文档强引用集合。
-2. `renderTimer`：`clearTimeout` 后置 `undefined`，与 `repeatTimer` / `syncRAF` 一致。
-3. 初始化竞态：插件级加 `state.alive`（shutdown 置 `false`，模块状态随下次 startup 重建），三个 await
-   之后各检查一次；同时检查 reader 是否已关闭——不能只靠 `uninit` 包装设的标志（它装得太晚），要么
-   把包装提前到第一个 await 之前，要么用 `Components.utils.isDeadWrapper` / `_internalReader` 判断。
-   取消时直接返回/抛错，不登记 runtime、不挂 observer。shutdown 顺手清空 `ensureReaderPromises`。
-4. 若第 4 条真机成立：在 `shutdown` 里按 runtime 文档删 overlay 节点、撤 `RAW_HIDDEN_CLASS`。不要放进
-   `disposeRuntime`：正常 reader 关闭时文档随即销毁，清不清等价，放进去只会给每次关闭多加一遍全文档
-   查询。
+目标是让 shutdown 成为真正的终点：之后旧沙箱不能再对 reader 产生副作用；正常 reader 关闭仍走同一套
+dispose。
+
+1. 补丁失效：给 `state` 加 `alive`（shutdown 置 `false`），所有包装入口先判断，命中就直接调用原
+   方法。不采用"恢复原方法"，避免覆盖其他可能的包装方；`reader.uninit` 包装保留，用于兜底清理晚到
+   runtime。
+2. 卸载时清页面：只在插件卸载路径删除本插件注入的 overlay 节点、撤 `RAW_HIDDEN_CLASS`、移除样式与
+   按钮；不要放进每次 reader 关闭（文档本来就要销毁，白加一遍全文档扫描）。
+3. 工具栏样式：dispose 的文档循环里顺带删 `TOOLBAR_STYLE_ID`；shutdown 再按 `Zotero.Reader._readers`
+   补一遍，覆盖"样式已注入、runtime 还没建"的 reader。
+4. `renderTimer`：`clearTimeout` 后置 `undefined`，与 `repeatTimer` / `syncRAF` 一致。
+5. 晚到初始化：三个 await 之后检查 `state.alive` 与 reader 是否已关闭（提前装 uninit 标记或用
+   `Components.utils.isDeadWrapper` 判断），取消时不登记 runtime、不挂 observer；shutdown 顺手清空
+   `ensureReaderPromises`。
+6. 落地时把本篇改名为 `reader-lifecycle-gaps`、状态转 `implemented`，正文按 implemented 模板改写成
+   `问题 → 决策`。
 
 ## 风险
 
-- 样式删除范围：要确认工具栏文档不被多个 reader 共享（当前每个 reader 自己一个文档，依据见
-  architecture.md 的运行形态）；共享时删一次会影响其他 reader。
-- shutdown 先 `stopToolbarIntegration`，正常路径不会再注入；`disposeWindow`（主窗口关闭）与 reader
-  关闭并发的时序仍需真机确认。
-- 竞态修复动生命周期顺序，取消条件依赖 uninit 安装时机与死 wrapper 判定，必须真机验证；改后过回归项 1
-  和新增的生命周期检查（见下）。
-- 第 4 条改的是页面内容，移除 overlay 后原文必须恢复可见，只做真机确认过的部分。
+- 补丁短路动到正常路径（标注增改、拖动各多一次布尔判断；渲染热路径不受影响），要确认启用状态下
+  行为与耗时不变。
+- 不恢复原方法意味着多次开关后调用链上是多层直通包装，要确认没有累积的性能或行为影响。
+- 卸载时删 overlay、撤隐藏会改页面内容，必须真机确认原文恢复、无重复文字；原文可能仍被 Zotero
+  原框裁剪，这是框尺寸决定的，不在本次范围。
+- 竞态的取消条件依赖 Zotero uninit 时机，必须真机确认。
 
 ## 验收
 
-- 禁用插件、reader 仍开：reader 文档里没有 `zotero-latex-math-toolbar-styles` 节点（dev 控制台或诊断
-  日志确认）；页面没有重复渲染文本、原文可见（第 4 条成立时）；重新启用并重开 PDF 后 Σ 与样式正常。
-- in-flight 时禁用插件（dev 构建在 `_waitForReader` 后加可控延时复现）：禁用后不再新增 overlay，日志
-  没有来自旧沙箱的渲染记录。
-- in-flight 时关闭 reader（同样用延时复现）：不再空转 15 秒后报 "PDF iframe window is not ready"，
-  `ensureReaderPromises` 不留条目。
-- 正常打开/关闭/翻页/缩放/插入/编辑行为与现在一致（[testing.md](../../docs/testing.md#L63-L79) 的回归
+- 禁用插件、reader 仍开：无 overlay、页面无重复/错位文字、原文可见；工具栏无残留样式节点。
+- 禁用后拖动原始文本框：走 Zotero 原生行为，插件不再测量、不再隐藏原文、不再改写 rect。
+- 反复禁用/启用 5 次后再插入/拖动：行为正常、无可感知变慢、无重复 overlay。
+- 初始化中禁用/关闭（dev 构建加可控延时复现）：不再出现新的渲染，`ensureReaderPromises` 不留条目。
+- 没退出 PDF 直接重新启用插件：立即恢复渲染与 Σ 按钮。
+- 正常打开/关闭/翻页/缩放/插入/编辑与现在一致（[testing.md](../../docs/testing.md#L63-L79) 的回归
   清单，重点第 1 条）。

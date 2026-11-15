@@ -53,15 +53,15 @@
 
 ## 索引
 
-| Note                                                                  | 状态        | 一句话                                                      |
-| --------------------------------------------------------------------- | ----------- | ----------------------------------------------------------- |
-| [module-split](module-split.md)                                       | implemented | mathTool.ts 拆成门面 + src/math/ 模块 + 集中 state          |
-| [rich-text-math](rich-text-math.md)                                   | implemented | 标注里混写文本与公式的识别、渲染、编辑器方案                |
-| [rect-fit-content](rect-fit-content.md)                               | implemented | 纯公式 rect 按 fit-content 测量，拖动时接管 Zotero 的重排   |
-| [render-hot-path](render-hot-path.md)                                 | implemented | 渲染热路径的短路、扫描与缓存策略                            |
-| [external-katex-fonts](external-katex-fonts.md)                       | rejected    | 字体改用外部文件与 `chrome://` 引用，PDF 页面加载不了       |
-| [custom-color-picker](custom-color-picker.md)                         | rejected    | 任意取色，系统取色弹窗位置不可控                            |
-| [sidebar-edit-rect-normalization](sidebar-edit-rect-normalization.md) | proposed    | 侧栏改 comment 后按宽度重算 rect                            |
-| [wide-display-math](wide-display-math.md)                             | proposed    | 混排中超宽块级公式的处理策略                                |
-| [text-font-alignment](text-font-alignment.md)                         | proposed    | 混排文本字体/行高与原生文本标注对齐                         |
-| [cleanup-gaps](cleanup-gaps.md)                                       | proposed    | disposeRuntime 清理缺口：工具栏样式、定时器句柄、初始化竞态 |
+| Note                                                                  | 状态        | 一句话                                                     |
+| --------------------------------------------------------------------- | ----------- | ---------------------------------------------------------- |
+| [module-split](module-split.md)                                       | implemented | mathTool.ts 拆成门面 + src/math/ 模块 + 集中 state         |
+| [rich-text-math](rich-text-math.md)                                   | implemented | 标注里混写文本与公式的识别、渲染、编辑器方案               |
+| [rect-fit-content](rect-fit-content.md)                               | implemented | 纯公式 rect 按 fit-content 测量，拖动时接管 Zotero 的重排  |
+| [render-hot-path](render-hot-path.md)                                 | implemented | 渲染热路径的短路、扫描与缓存策略                           |
+| [external-katex-fonts](external-katex-fonts.md)                       | rejected    | 字体改用外部文件与 `chrome://` 引用，PDF 页面加载不了      |
+| [custom-color-picker](custom-color-picker.md)                         | rejected    | 任意取色，系统取色弹窗位置不可控                           |
+| [sidebar-edit-rect-normalization](sidebar-edit-rect-normalization.md) | proposed    | 侧栏改 comment 后按宽度重算 rect                           |
+| [wide-display-math](wide-display-math.md)                             | proposed    | 混排中超宽块级公式的处理策略                               |
+| [text-font-alignment](text-font-alignment.md)                         | proposed    | 混排文本字体/行高与原生文本标注对齐                        |
+| [cleanup-gaps](cleanup-gaps.md)                                       | proposed    | shutdown 后仍在生效的残留：补丁、overlay、样式与晚到初始化 |

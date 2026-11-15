@@ -54,5 +54,10 @@
         }
       }
     ]
+  },
+  "allowScripts": {
+    "@swc/core@1.16.22": true,
+    "es5-ext@0.10.64": true,
+    "esbuild@0.28.2": true
   }
 }

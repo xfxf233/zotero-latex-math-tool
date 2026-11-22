@@ -63,5 +63,5 @@
 | [external-katex-fonts](external-katex-fonts.md)                       | rejected    | 字体改用外部文件与 `chrome://` 引用，PDF 页面加载不了     |
 | [custom-color-picker](custom-color-picker.md)                         | rejected    | 任意取色，系统取色弹窗位置不可控                          |
 | [sidebar-edit-rect-normalization](sidebar-edit-rect-normalization.md) | proposed    | 侧栏改 comment 后按宽度重算 rect                          |
-| [wide-display-math](wide-display-math.md)                             | proposed    | 混排中超宽块级公式的处理策略                              |
+| [wide-display-math](wide-display-math.md)                             | rejected    | 混排超宽块公式只向右溢出，真机判定不修                    |
 | [reader-init-race](reader-init-race.md)                               | implemented | 初始化晚到：取消信号中止晚到初始化，不残留、不挂起        |

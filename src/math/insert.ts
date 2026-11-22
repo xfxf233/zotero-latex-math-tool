@@ -28,6 +28,7 @@ import { openEditorInDocument } from "./editor";
 import { getClickLocationFromDocument } from "./geometry";
 import { logError, showError } from "./log";
 import { collectReaderDocuments } from "./readerDocs";
+import { logReaderInitError } from "./readerInitCancel";
 import { scheduleRender } from "./renderer";
 import { state } from "./state";
 import { injectToolbarStyles } from "./styles";
@@ -71,7 +72,7 @@ export function startToolbarIntegration(
     const reader = event.reader as _ZoteroTypes.ReaderInstance<"pdf">;
     appendToolbarButton(event, reader);
     ensureReaderFn(reader).catch((error) =>
-      logError("Unable to initialize reader", error),
+      logReaderInitError("Unable to initialize reader", error),
     );
   };
 
@@ -234,7 +235,10 @@ async function activateNativeTextInsertMode(
   startToolMonitor(reader);
 
   ensureReaderReady(reader).catch((error) =>
-    logError("Unable to initialize renderer after text tool activation", error),
+    logReaderInitError(
+      "Unable to initialize renderer after text tool activation",
+      error,
+    ),
   );
 }
 
@@ -393,7 +397,10 @@ function installDirectPDFClickHandlers(
         ensureReaderReady(reader)
           .then((runtime) => scheduleRender(runtime.reader, true))
           .catch((error) =>
-            logError("Unable to refresh rendered math annotation", error),
+            logReaderInitError(
+              "Unable to refresh rendered math annotation",
+              error,
+            ),
           );
       },
     });
@@ -467,7 +474,10 @@ async function completeNativeMathAnnotation(
           scheduleRender(runtime.reader, true);
         })
         .catch((error) =>
-          logError("Unable to refresh rendered math annotation", error),
+          logReaderInitError(
+            "Unable to refresh rendered math annotation",
+            error,
+          ),
         );
     },
   });

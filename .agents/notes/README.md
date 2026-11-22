@@ -64,5 +64,4 @@
 | [custom-color-picker](custom-color-picker.md)                         | rejected    | 任意取色，系统取色弹窗位置不可控                          |
 | [sidebar-edit-rect-normalization](sidebar-edit-rect-normalization.md) | proposed    | 侧栏改 comment 后按宽度重算 rect                          |
 | [wide-display-math](wide-display-math.md)                             | proposed    | 混排中超宽块级公式的处理策略                              |
-| [text-font-alignment](text-font-alignment.md)                         | proposed    | 混排文本字体/行高与原生文本标注对齐                       |
-| [reader-init-race](reader-init-race.md)                               | proposed    | 初始化晚到：shutdown/关闭后仍登记 runtime                 |
+| [reader-init-race](reader-init-race.md)                               | implemented | 初始化晚到：取消信号中止晚到初始化，不残留、不挂起        |

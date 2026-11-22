@@ -62,35 +62,47 @@ export function getPDFPageDocuments(runtime: ReaderRuntime): Document[] {
 export async function waitForPDFWindow(
   reader: _ZoteroTypes.ReaderInstance<"pdf">,
   timeout = 15000,
+  shouldAbort?: () => boolean,
 ): Promise<Window | undefined> {
   const started = Date.now();
   while (Date.now() - started < timeout) {
+    // reader 关闭或插件卸载时立即返回，否则要空转到超时；返回 undefined 由调用方
+    // 按取消处理。
+    if (shouldAbort?.()) {
+      return undefined;
+    }
     const win = getPDFWindow(reader);
     if (win?.document?.body) {
       return win;
     }
     await Zotero.Promise.delay(100);
   }
-  return getPDFWindow(reader);
+  return shouldAbort?.() ? undefined : getPDFWindow(reader);
 }
 
 function getPDFWindow(
   reader: _ZoteroTypes.ReaderInstance<"pdf">,
 ): Window | undefined {
-  const readerAny = reader as any;
-  const primaryView = readerAny._internalReader?._primaryView;
-  const candidates = [
-    primaryView?._iframeWindow,
-    primaryView?._iframe?.contentWindow,
-    readerAny._iframeWindow,
-    readerAny._iframe?.contentWindow,
-    state.readerDocs.get(reader)?.defaultView,
-    ...getNestedFrameWindows(primaryView?._iframeWindow?.document),
-    ...getNestedFrameWindows(readerAny._iframeWindow?.document),
-    ...getNestedFrameWindows(state.readerDocs.get(reader)),
-  ].filter((win): win is Window => Boolean(win?.document?.body));
+  try {
+    const readerAny = reader as any;
+    const primaryView = readerAny._internalReader?._primaryView;
+    const candidates = [
+      primaryView?._iframeWindow,
+      primaryView?._iframe?.contentWindow,
+      readerAny._iframeWindow,
+      readerAny._iframe?.contentWindow,
+      state.readerDocs.get(reader)?.defaultView,
+      ...getNestedFrameWindows(primaryView?._iframeWindow?.document),
+      ...getNestedFrameWindows(readerAny._iframeWindow?.document),
+      ...getNestedFrameWindows(state.readerDocs.get(reader)),
+    ].filter((win): win is Window => Boolean(win?.document?.body));
 
-  return candidates.find((win) => isPDFCanvasWindow(win));
+    return candidates.find((win) => isPDFCanvasWindow(win));
+  } catch {
+    // reader 关闭过程中 cross-compartment wrapper 可能已经死掉，读属性会抛
+    // NS_ERROR。按"这一轮没找到"处理，由调用方的中止谓词决定是否继续等。
+    return undefined;
+  }
 }
 
 function getNestedFrameWindows(

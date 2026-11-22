@@ -35,6 +35,13 @@ export const state = {
   patchedManagers: new WeakSet<AnnotationManager>(),
   patchedViews: new WeakSet<object>(),
   patchedReaders: new WeakSet<_ZoteroTypes.ReaderInstance>(),
+  // 已 uninit 的 reader。uninit 包装可能晚于初始化装上，所以关闭判定还得配合
+  // `Components.utils.isDeadWrapper`，见 readerInit 的 isInitCancelled。
+  closedReaders: new WeakSet<_ZoteroTypes.ReaderInstance>(),
+  // in-flight 初始化的取消函数：uninit 与 shutdown 都调它，让等待中的初始化立即
+  // 结束，而不是等 Zotero 的 promise 自己 settle（`initializedPromise` 可能永不
+  // settle，见 reader-init-race 那篇 note）。
+  readerInitAborts: new Map<_ZoteroTypes.ReaderInstance<"pdf">, () => void>(),
   runtimeSet: new Set<ReaderRuntime>(),
   lastRenderDiagnostics: new WeakMap<_ZoteroTypes.ReaderInstance, string>(),
   mathAnnotationCache: new WeakMap<_ZoteroTypes.ReaderInstance, boolean>(),

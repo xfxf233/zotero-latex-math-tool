@@ -1,51 +1,57 @@
 ---
-status: proposed
+status: implemented
 proposed: 2026-11
+settled: 2026-11
 ---
 
 # reader 初始化晚到的竞态
 
 ## 问题
 
-`initializeReaderRuntime` 在 `_waitForReader` / `initializedPromise` / `waitForPDFWindow` 三个
-await 之后都不检查"插件是否已 shutdown、reader 是否已关闭"
-（[readerInit.ts](../../src/math/readerInit.ts#L42-L80)）；`shutdown` 只清 `runtimeSet`，不取消
-`state.ensureReaderPromises` 里的 in-flight 初始化（[mathTool.ts](../../src/mathTool.ts#L28-L40)）。
-两种场景后果不同：
+`initializeReaderRuntime` 原本在 `_waitForReader`、`primaryView.initializedPromise`、
+`waitForPDFWindow` 三个 await 之后都不检查"插件是否已 shutdown、reader 是否已关闭"，
+`shutdown` 也不清 in-flight；`reader.uninit` 的包装要到初始化末尾才装。由此有三种后果：
 
-- **禁用/卸载时的 in-flight（推断）**：`state.alive` 只让 Zotero 回调上的包装短路，初始化本身仍
-  会走完：登记 runtime、挂 observer、注入样式，并跑首轮渲染。插件已经停用，公式仍被渲染、原文
-  仍被隐藏，直到 reader 关闭（晚装的 `uninit` 包装届时兜底清理）。
-- **初始化中关闭 reader**：`reader.uninit` 的包装是初始化最后一步才装的
-  （[patches.ts](../../src/math/patches.ts#L386-L410)），关闭发生在之前时不会走 dispose。之后
-  `waitForPDFWindow` 多半取不到窗口，最可能是空转 15 秒后抛 "PDF iframe window is not ready"、
-  日志多一条错误，并让 `ensureReaderPromises` 暂时留住已关闭的 reader；是否还会登记孤儿 runtime
-  取决于 uninit 期间窗口何时失效，需真机确认（推断）。
+- **禁用/卸载时 in-flight**：初始化会走完并登记 runtime、挂 observer、跑首轮渲染。但
+  `injectStyles` 被 `state.alive` 挡住，页面没有插件样式——overlay 以未排版形式插进页面、
+  `RAW_HIDDEN_CLASS` 没有对应 CSS，原文不隐藏；`removePageResidue` 已在 shutdown 跑过，
+  残留持续到 reader 关闭。
+- **初始化中关闭 reader**：Zotero 的 `initializedPromise` 只在 PDF 文档初始化完成时 resolve
+  （安装版 10.0.8 `resource/reader/reader.js:75407、75698`），文档没加载完就关可能永不 settle
+  ——初始化 promise 永久 pending、没有日志，`ensureReaderPromises`（强引用 Map）永久留住已
+  关闭的 reader（源码推断）。关在 `waitForPDFWindow` 时死 wrapper 会直接抛 NS_ERROR
+  （`ReaderInstance.uninit()` 不清 `_iframeWindow`，`xpcom/reader.js:706-732`）；关在
+  `_waitForReader` 时 10 秒后抛 `Waiting for reader failed`（同文件 1583-1596）。
+- startup 对已打开 reader 的 `void ensureReader(...)` 没有 catch，上述 reject 会变成未处理
+  rejection。
 
-## 方案
+## 决策
 
-1. 给 reader 记"已关闭"标记：把 `patchReaderUninit` 提前到第一个 await 之前装（它的 uninit
-   回调在没有 runtime 时只做标记），或在每个 await 之后用 `Components.utils.isDeadWrapper` /
-   `_internalReader` 判断。
-2. 三个 await 之后各检查一次 `state.alive` 与"已关闭"；命中就提前结束，不登记 runtime、不挂
-   observer、不注入样式。
-3. shutdown 清空 `state.ensureReaderPromises`。
-4. 取消不能表现成"初始化失败"：调用方目前对 `ensureReader` 一律 `.catch(logError)`，关闭 reader
-   的常规路径不该刷一条错误。要么抛可识别的取消错误并在调用方跳过日志，要么返回 `undefined` 并
-   让需要 runtime 的调用方跳过后续渲染。
-5. 复现要靠 dev 构建在 await 后加可控延时（例如 2s），否则手工抢不到窗口。
+1. **关闭信号**：`patchReaderUninit` 提前到第一个 await 之前装；uninit 时把 reader 记进
+   `state.closedReaders` 并调用 `state.readerInitAborts` 里登记的取消函数，没有 runtime 时
+   只做这两件事。包装装得比关闭晚的情况用
+   `Components.utils.isDeadWrapper(reader._iframeWindow)` 兜底。
+2. **取消**：每个 in-flight 初始化登记一个取消函数，每个 await 与取消信号 race（取消时
+   resolve，不 reject，免得没人再等时变成未处理 rejection）；入口与每个 await 之后都检查
+   `state.alive`、关闭标记与死 wrapper，命中抛 `ReaderInitCancelled`，不登记 runtime、不碰
+   页面。`waitForPDFWindow` 的轮询接受中止谓词，`getPDFWindow` 整体 try/catch（关闭中的死
+   wrapper 只算"这一轮没找到"）。
+3. **取消不写日志**：调用方统一用 `logReaderInitError`（`readerInitCancel.ts`）过滤取消错误，
+   startup 那处也补上了 catch。
+4. **shutdown**：先 `alive = false`，再取消全部 in-flight、清空 `readerInitAborts` 与
+   `ensureReaderPromises`（释放对已关闭 reader 的强引用），最后照旧清 runtime 与页面残留。
 
-## 风险
+## 考虑过但没选的
 
-- 取消条件依赖 Zotero uninit 的时机与死 wrapper 判定，必须真机确认。
-- 改的是初始化返回约定或错误处理，会波及 insert 侧的 `ensureReaderReady` 调用点，需要逐个确认
-  不会吞掉真实错误。
-- dev 延时只进 dev 构建，不能带进 production 包。
+- 取消时返回 `ReaderRuntime | undefined`：要改 `ReaderInitializer` 类型和四处
+  `.then(runtime => scheduleRender(...))`，波及比"可识别错误 + 日志 helper"大。
+- 在 overlay / hiding 热路径加 `state.alive` 判断：会把"禁用后仍渲染"变成静默发生，还给热
+  路径多加一次判断；在初始化处中止更干净。
 
-## 验收
+## 经验
 
-- 初始化中禁用插件（dev 延时复现）：禁用后不再新增 overlay，日志没有旧沙箱的渲染记录。
-- 初始化中关闭 reader（同样用延时）：不再空转 15 秒后报 "PDF iframe window is not ready"，
-  `ensureReaderPromises` 不留条目。
-- 正常打开/关闭/翻页/缩放/插入/编辑与现在一致（[testing.md](../../docs/testing.md#人工回归清单)，
-  重点第 1 条），并过新增的禁用/启用回归项。
+- 关 reader 真正的风险不是"多跑一次初始化"，而是 Zotero 的 promise 可能永不 settle。只查
+  状态不 race，会漏掉最常见的挂起形态。
+- 关闭信号有两个来源（uninit 包装、shutdown）；Zotero 的 `uninit()` 不清 `_iframeWindow`，
+  所以死 wrapper 检查必须单独留着，不能只靠自己的标记。
+- 自动化只覆盖编译与纯逻辑；禁用时正在初始化、打开大 PDF 立刻关这两条只能在真机验证。

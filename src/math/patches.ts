@@ -382,6 +382,9 @@ function normalizeResizedMathAnnotationRects(
  * wrapping it guarantees the MutationObservers and window listeners held by
  * the runtime are released when a PDF tab is closed — not just when the whole
  * plugin or window shuts down.
+ *
+ * 由 `initializeReaderRuntime` 在第一个 await 之前安装：包装同时充当"reader
+ * 已关闭"信号，取消还在等待中的初始化（没有 runtime 时只标记、不清理）。
  */
 export function patchReaderUninit(
   reader: _ZoteroTypes.ReaderInstance<"pdf">,
@@ -397,6 +400,10 @@ export function patchReaderUninit(
   }
 
   reader.uninit = () => {
+    // 先记关闭并取消 in-flight 初始化：初始化可能正等在一个永不 settle 的
+    // promise 上（见 readerInit / reader-init-race 那篇 note）。
+    state.closedReaders.add(reader);
+    state.readerInitAborts.get(reader)?.();
     try {
       const runtime = state.runtimes.get(reader);
       if (runtime) {

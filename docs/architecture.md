@@ -24,13 +24,16 @@ Zotero 9–10.x 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 
    注册 `renderToolbar` 监听，并对启动时已打开的 PDF reader 补一次 `ensureReader`。
 3. `renderToolbar` 事件 → `appendToolbarButton`（insert.ts：注入 Σ 并重定位）+
    `ensureReader`（readerInit.ts）。
-4. `ensureReader` 幂等、并发去重（共享 in-flight Promise）。`initializeReaderRuntime`：
-   等 `_waitForReader`、`primaryView.initializedPromise`、PDF 窗口就绪 → patch 标注管理器 →
-   挂 `resize` → 登记 runtime → patch `reader.uninit` → 启动 observer → 首轮渲染。
+4. `ensureReader` 幂等、并发去重（共享 in-flight Promise）。`initializeReaderRuntime` 先 patch
+   `reader.uninit`（同时充当"reader 已关闭"信号），再等 `_waitForReader`、
+   `primaryView.initializedPromise`、PDF 窗口就绪 → patch 标注管理器 → 挂 `resize` → 登记
+   runtime → 启动 observer → 首轮渲染。每个等待都与取消信号 race：插件 shutdown 或 reader
+   关闭时初始化以 `ReaderInitCancelled` 结束，不登记 runtime、不碰页面。
 5. 关闭：`disposeWindow`（按窗口，容忍死 wrapper）、`patchReaderUninit`（按 reader）、
-   `shutdown`（插件卸载：先让挂在 Zotero 对象上的补丁短路，再清理全部 runtime 与页面上的
-   overlay / 原文隐藏状态）。observer、监听、document 引用的清理收敛在 `src/math/dispose.ts` 的
-   `disposeRuntime`；overlay 与原文隐藏只在插件卸载时清，reader 关闭时文档本身销毁，不必再扫。
+   `shutdown`（插件卸载：先让挂在 Zotero 对象上的补丁短路、取消 in-flight 初始化并清空
+   in-flight 表，再清理全部 runtime 与页面上的 overlay / 原文隐藏状态）。observer、监听、
+   document 引用的清理收敛在 `src/math/dispose.ts` 的 `disposeRuntime`；overlay 与原文隐藏只在
+   插件卸载时清，reader 关闭时文档本身销毁，不必再扫。
 
 ## 模块
 
@@ -41,6 +44,7 @@ Zotero 9–10.x 插件：在 PDF 阅读器工具栏加一个 Σ 按钮，把带 
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `src/mathTool.ts`                        | 插件门面 `LatexMathTool`：`startup` / `shutdown` / `disposeWindow`，只做接线。                      |
 | `src/math/readerInit.ts`                 | `ensureReader`（幂等 + 并发去重）与 runtime 建立。                                                  |
+| `src/math/readerInitCancel.ts`           | 初始化取消错误与"取消不写日志"的过滤 helper。                                                       |
 | `src/math/dispose.ts`                    | 关闭 reader 时释放 runtime 的 observer、监听、定时器与注入样式。                                    |
 | `src/math/insert.ts`                     | Σ 按钮注入/定位（含工具栏文档登记与取消监听）、数学插入模式、原生工具监视、点击接管与原生标注兜底。 |
 | `src/math/patches.ts`                    | 包装 `annotationManager` 的增改入口、view 的 `adjustTextAnnotationPosition`、`reader.uninit`。      |
